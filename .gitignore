@@ -141,3 +141,10 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# rust / wasm build output
+target/
+web/public/muse_core.wasm
+
+# playwright
+test-results/

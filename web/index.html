@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>muse — live music DSL</title>
+  </head>
+  <body>
+    <header>
+      <div class="logo">muse<span class="tag">β</span></div>
+      <button id="run" class="primary" title="evaluate editor (ctrl+enter)">▶ run</button>
+      <button id="play" title="resume playback">⏯ play</button>
+      <button id="stop" title="stop (ctrl+.)">■ stop</button>
+      <label class="bpm"
+        >bpm <input id="bpm" type="number" value="120" min="30" max="300" step="1"
+      /></label>
+      <div id="pos" class="pos">—</div>
+      <div id="audio-status" class="status">audio ○</div>
+    </header>
+
+    <main>
+      <section id="editor" aria-label="code editor"></section>
+      <section id="bottom">
+        <div id="console" aria-label="repl output"></div>
+        <div id="viz-wrap"><canvas id="viz" aria-label="pattern visualizer"></canvas></div>
+      </section>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

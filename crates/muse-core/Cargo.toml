@@ -1,0 +1,10 @@
+[package]
+name = "muse-core"
+version = "0.1.0"
+edition = "2021"
+description = "Pattern IR, query engine, clock/scheduler and DSP for the muse live-coding DSL"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]

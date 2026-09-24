@@ -1,0 +1,25 @@
+{
+  "name": "muse",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Live music coding DSL: Monaco \u2192 TypeScript DSL/REPL \u2192 Pattern IR \u2192 WASM (Rust clock/scheduler/DSP) \u2192 AudioWorklet",
+  "scripts": {
+    "build:wasm": "bash scripts/build-wasm.sh",
+    "dev": "npm run build:wasm && vite",
+    "build": "npm run build:wasm && tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "cargo test --quiet && npm run build:wasm && vitest run",
+    "typecheck": "tsc --noEmit",
+    "e2e": "node scripts/e2e.mjs",
+    "verify": "npm test && tsc --noEmit && vite build && node scripts/e2e.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "monaco-editor": "^0.52.2",
+    "playwright": "^1.63.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7",
+    "vitest": "^3.0.5"
+  }
+}
