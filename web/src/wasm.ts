@@ -43,8 +43,9 @@ export class WasmCore {
   }
 
   /** Instantiate a core from bytes already in memory. */
-  static async fromBytes(bytes: ArrayBuffer): Promise<WasmCore> {
-    const { instance } = await WebAssembly.instantiate(bytes, {});
+  static async fromBytes(bytes: BufferSource): Promise<WasmCore> {
+    // cast: TS5.7 types Uint8Array<ArrayBufferLike> as not-a-BufferSource
+    const { instance } = await WebAssembly.instantiate(bytes as unknown as BufferSource, {});
     return new WasmCore(instance.exports as unknown as CoreExports);
   }
 

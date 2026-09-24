@@ -31,10 +31,40 @@ npm run dev          # builds the wasm + starts vite (http://localhost:5173)
 
 Press **ctrl+enter** to run the editor — audio starts on the first run.
 
+### CLI
+
+The same pipeline ships as a self-contained terminal command (wasm inlined):
+
 ```sh
-npm test             # 25 rust tests + 30 TS tests + wasm build
+npm run build:cli            # → dist/cli/muse.cjs (single file, wasm included)
+./muse                       # interactive REPL with a live timeline
+./muse run examples/demo.js --bpm 120 --seconds 8 -o demo.wav
+
+# or via npm / global install
+npm run cli -- --help
+npm link && muse             # puts `muse` on your PATH
+```
+
+```text
+muse ❯ stack("bd . hh bd . hh . hh", fast(2, "sn . . sn"))
+✓ pattern installed in 0.9 ms
+▶ 120 bpm · cycle 3.42 · sink ffplay
+│ bd   ● · · · ● · · ● · · · ● · · ●
+│ sn   · ○ · · ○ · · ○ · · ○ · · ○ ·
+└ mel  █ · █ · █ · █ · █ · █ · █ · █
+```
+
+- audio streams to `ffplay`/`paplay`/`aplay` when a device exists; otherwise it
+  runs silently with the timeline (headless-friendly)
+- `muse run` renders **offline & deterministically** to 16-bit WAV
+- commands: `:bpm [n]` `:play` `:stop` `:help` `:quit`
+
+```sh
+npm test             # 25 rust tests + 35 TS tests + wasm build
+npm run cli:test     # CLI smoke test (help/run/repl, wav roundtrip)
 npm run build        # production build → dist/
 node scripts/e2e.mjs # headless-Chromium end-to-end test (needs `npm run build`)
+npm run verify       # everything above, in order
 ```
 
 ## The pipeline
@@ -50,6 +80,7 @@ node scripts/e2e.mjs # headless-Chromium end-to-end test (needs `npm run build`)
 | DSP (Rust) | `crates/muse-core/src/dsp.rs` | voices, drum synths, SVF filter, envelopes, delay, soft clip |
 | AudioWorklet | `web/src/audio/processor.js` | second wasm instance; sample-accurate rendering, output meter |
 | Engine | `web/src/audio/engine.ts` | transport, 60 ms tick, event posting, hot pattern swap |
+| CLI | `cli/*.ts` → `dist/cli/muse.cjs` | wall-clock transport, PCM sink, ANSI timeline, offline WAV |
 
 Two wasm *instances* run from one artifact: the main-thread instance owns the
 pattern + clock + scheduler; the worklet instance owns the DSP. They share no
@@ -132,5 +163,7 @@ clamped again in the DSP.
 crates/muse-core/   Rust: IR decoder, query engine, clock/scheduler, DSP → wasm32
 web/src/            TypeScript: DSL, REPL, engine, UI
 web/public/         muse_core.wasm (copied by scripts/build-wasm.sh)
-scripts/            build-wasm.sh, e2e.mjs
+cli/                Terminal封装: driver, PCM sinks, TUI, offline renderer
+scripts/            build-wasm.sh, build-cli.sh, e2e.mjs, cli-test.mjs
+examples/           pattern files for `muse run`
 ```

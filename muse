@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# ./muse — build on demand, then run the CLI.
+set -euo pipefail
+cd "$(dirname "$0")"
+[ -f dist/cli/muse.cjs ] || bash scripts/build-cli.sh
+exec node dist/cli/muse.cjs "$@"

@@ -12,7 +12,10 @@
     "test": "cargo test --quiet && npm run build:wasm && vitest run",
     "typecheck": "tsc --noEmit",
     "e2e": "node scripts/e2e.mjs",
-    "verify": "npm test && tsc --noEmit && vite build && node scripts/e2e.mjs"
+    "verify": "npm test && npm run cli:test && tsc --noEmit && vite build && node scripts/e2e.mjs",
+    "build:cli": "bash scripts/build-cli.sh",
+    "cli": "bash scripts/build-cli.sh && node dist/cli/muse.cjs",
+    "cli:test": "bash scripts/build-cli.sh && node scripts/cli-test.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.6.2",
@@ -21,5 +24,8 @@
     "typescript": "^5.7.2",
     "vite": "^6.0.7",
     "vitest": "^3.0.5"
+  },
+  "bin": {
+    "muse": "dist/cli/muse.cjs"
   }
 }

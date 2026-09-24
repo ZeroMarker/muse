@@ -148,3 +148,6 @@ web/public/muse_core.wasm
 
 # playwright
 test-results/
+
+# rendered audio
+/*.wav
