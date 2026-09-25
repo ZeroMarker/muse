@@ -5,9 +5,10 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { loadCore } from "../../cli/core";
+import { Driver } from "../../cli/driver";
 import { encodeWav, renderOffline, rms, SAMPLE_RATE } from "../../cli/wav";
 import { mini } from "../src/mini";
-import { stack } from "../src/dsl";
+import { fast, silence, sound, stack } from "../src/dsl";
 
 const WASM_HINT = resolve(process.cwd(), "web/public/muse_core.wasm");
 
@@ -57,5 +58,53 @@ describe("cli offline render (muse run)", () => {
     const a = renderOffline(core, pat, 0.5, 2);
     const b = renderOffline(core, pat, 0.5, 2);
     expect(Buffer.from(a.buffer)).toEqual(Buffer.from(b.buffer));
+  });
+
+  it("keeps rendering after more than 4096 events", async () => {
+    const core = await loadCore();
+    const sampleRate = 8000;
+    const pcm = renderOffline(core, fast(1000, "bd").pat, 3, 2, sampleRate);
+    expect(rms(pcm.subarray(2.5 * sampleRate * 2))).toBeGreaterThan(0.01);
+  });
+
+  it("renders event data larger than the former 1 MiB buffer", async () => {
+    const core = await loadCore();
+    const pat = sound("x".repeat(3000), fast(200, "bd")).pat;
+    const pcm = renderOffline(core, pat, 2, 2, 8000);
+    expect(rms(pcm)).toBeGreaterThan(0.01);
+  });
+
+  it("skips paused wall-clock frames when restarting the CLI driver", async () => {
+    const core = await loadCore();
+    const sink = { label: "test", alive: true, write: () => {}, close: () => {} };
+    const driver = new Driver(core, sink, () => {});
+    let now = 0;
+    driver.now = () => now;
+    try {
+      driver.start();
+      driver.stop();
+      now = 120;
+      driver.start();
+      expect((driver as unknown as { rendered: number }).rendered).toBe(120 * SAMPLE_RATE);
+    } finally {
+      driver.dispose();
+    }
+  });
+
+  it("cancels queued old-pattern notes on a live swap", async () => {
+    const core = await loadCore();
+    const sink = { label: "test", alive: true, write: () => {}, close: () => {} };
+    const driver = new Driver(core, sink, () => {});
+    driver.now = () => 0;
+    try {
+      driver.setPattern(fast(10, "bd").pat);
+      driver.start();
+      const dsp = (driver as unknown as { dsp: number }).dsp;
+      expect(core.exports.dsp_stats(dsp) & 0xffff).toBeGreaterThan(0);
+      driver.setPattern(silence.pat);
+      expect(core.exports.dsp_stats(dsp) & 0xffff).toBe(0);
+    } finally {
+      driver.dispose();
+    }
   });
 });

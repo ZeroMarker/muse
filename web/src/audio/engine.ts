@@ -134,6 +134,7 @@ export class Engine {
     this.cps = cps;
     if (this.initialized && this.ctx) {
       this.exports.sched_set_cps(this.sched, cps, this.ctx.currentTime);
+      if (this.playing) this.reschedule();
     }
   }
 
@@ -156,8 +157,7 @@ export class Engine {
       this.core!.releasePattern(h);
     }
     if (this.playing && this.ctx) {
-      // restart the cursor so we never schedule events that already passed
-      this.exports.sched_reset(this.sched, this.ctx.currentTime + LEAD);
+      this.reschedule();
     }
   }
 
@@ -170,6 +170,14 @@ export class Engine {
   private get exports() {
     if (!this.core) throw new Error("engine not initialized");
     return this.core.exports;
+  }
+
+  /** Replace previously queued future notes with events at the current tempo. */
+  private reschedule(): void {
+    if (!this.ctx || !this.node) return;
+    this.node.port.postMessage({ type: "clear_pending" });
+    this.exports.sched_reset(this.sched, this.ctx.currentTime + LEAD);
+    this.tick();
   }
 
   /** Load wasm + AudioContext + worklet (needs a user gesture). Idempotent. */

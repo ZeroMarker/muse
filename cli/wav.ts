@@ -24,43 +24,11 @@ export function renderOffline(
     }
     x.sched_reset(sched, 0);
 
-    // collect every event in [0, seconds·cps) cycles (peek does not consume)
-    const cap = 1024 * 1024;
-    const { ptr, len } = core.allocBytes(cap);
-    let evs;
-    try {
-      const written = x.sched_peek(sched, 0, seconds * cps, ptr, len);
-      if (written < 0) throw new Error(`sched_peek failed (${written})`);
-      evs = unpackEvents(core.readBytes(ptr, written));
-    } finally {
-      core.free(ptr, len);
-    }
-
     const h = x.dsp_new(sampleRate);
     try {
       const ctlAlloc = core.allocBytes(NCTL * 8);
       const sndAlloc = core.allocBytes(128);
-      try {
-        const ctlView = new Float64Array(x.memory.buffer, ctlAlloc.ptr, NCTL);
-        for (const ev of evs) {
-          ctlView.set(ev.ctl);
-          const nlen = Math.min(ev.sound.length, 127);
-          const sndView = new Uint8Array(x.memory.buffer, sndAlloc.ptr, nlen);
-          for (let i = 0; i < nlen; i++) sndView[i] = ev.sound.charCodeAt(i) & 0x7f;
-          x.dsp_schedule(
-            h,
-            x.sched_audio_at(sched, ev.onsetCycle),
-            ev.durSec,
-            ctlAlloc.ptr,
-            sndAlloc.ptr,
-            nlen,
-          );
-        }
-      } finally {
-        core.free(ctlAlloc.ptr, ctlAlloc.len);
-        core.free(sndAlloc.ptr, sndAlloc.len);
-      }
-
+      let eventBuf = core.allocBytes(1024);
       const totalFrames = Math.ceil(seconds * sampleRate);
       const out = new Int16Array(totalFrames * 2);
       const chunk = 256;
@@ -69,6 +37,29 @@ export function renderOffline(
       try {
         for (let frame = 0; frame < totalFrames; frame += chunk) {
           const n = Math.min(chunk, totalFrames - frame);
+          const horizon = x.sched_cycle_at(sched, (frame + n) / sampleRate);
+          let written = x.sched_query(sched, horizon, eventBuf.ptr, eventBuf.len);
+          while (written === -2) {
+            const larger = core.allocBytes(eventBuf.len * 2);
+            core.free(eventBuf.ptr, eventBuf.len);
+            eventBuf = larger;
+            written = x.sched_query(sched, horizon, eventBuf.ptr, eventBuf.len);
+          }
+          if (written < 0) throw new Error(`sched_query failed (${written})`);
+          for (const ev of unpackEvents(core.readBytes(eventBuf.ptr, written))) {
+            new Float64Array(x.memory.buffer, ctlAlloc.ptr, NCTL).set(ev.ctl);
+            const nlen = Math.min(ev.sound.length, 127);
+            const sndView = new Uint8Array(x.memory.buffer, sndAlloc.ptr, nlen);
+            for (let i = 0; i < nlen; i++) sndView[i] = ev.sound.charCodeAt(i) & 0x7f;
+            x.dsp_schedule(
+              h,
+              x.sched_audio_at(sched, ev.onsetCycle),
+              ev.durSec,
+              ctlAlloc.ptr,
+              sndAlloc.ptr,
+              nlen,
+            );
+          }
           x.dsp_process(h, lPtr.ptr, rPtr.ptr, n, frame);
           const l = new Float32Array(x.memory.buffer, lPtr.ptr, n);
           const r = new Float32Array(x.memory.buffer, rPtr.ptr, n);
@@ -80,6 +71,9 @@ export function renderOffline(
       } finally {
         core.free(lPtr.ptr, lPtr.len);
         core.free(rPtr.ptr, rPtr.len);
+        core.free(eventBuf.ptr, eventBuf.len);
+        core.free(ctlAlloc.ptr, ctlAlloc.len);
+        core.free(sndAlloc.ptr, sndAlloc.len);
       }
       return out;
     } finally {

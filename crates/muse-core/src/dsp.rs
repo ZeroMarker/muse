@@ -416,6 +416,11 @@ impl Dsp {
         self.delay_idx = 0;
     }
 
+    /// Cancel future notes while allowing voices already sounding to finish.
+    pub fn clear_pending(&mut self) {
+        self.pending.clear();
+    }
+
     /// (live voices, pending-but-not-started events) — diagnostics.
     pub fn stats(&self) -> (usize, usize) {
         (self.voices.len(), self.pending.len())
@@ -558,5 +563,21 @@ mod tests {
             d.process(&mut l, &mut r, (q * 256) as i64);
             assert!(l.iter().all(|x| *x == 0.0));
         }
+    }
+
+    #[test]
+    fn clear_pending_keeps_current_voice() {
+        let mut d = Dsp::new(48000.0);
+        let ctl = default_ctl();
+        d.schedule(0.0, 1.0, &ctl, "saw");
+        d.schedule(0.5, 1.0, &ctl, "saw");
+        let mut l = vec![0.0f32; 256];
+        let mut r = vec![0.0f32; 256];
+        d.process(&mut l, &mut r, 0);
+        assert_eq!(d.stats(), (1, 1));
+        d.clear_pending();
+        assert_eq!(d.stats(), (1, 0));
+        d.process(&mut l, &mut r, 256);
+        assert!(l.iter().any(|sample| sample.abs() > 0.001));
     }
 }

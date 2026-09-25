@@ -63,6 +63,7 @@ export class Driver {
       this.renderLoop();
     }
     if (!this.sched) return;
+    this.rendered = Math.floor(this.now() * 48000);
     this.playing = true;
     this.x.sched_reset(this.sched, this.now() + LEAD);
     this.x.dsp_flush(this.dsp);
@@ -84,6 +85,7 @@ export class Driver {
   setCps(cps: number): void {
     this.cps = cps;
     if (this.sched) this.x.sched_set_cps(this.sched, cps, this.now());
+    if (this.playing) this.reschedule();
   }
 
   /** Hot-swap the playing pattern (starts the engine on first use). */
@@ -91,7 +93,13 @@ export class Driver {
     this.pattern = pat;
     if (!this.sched) return;
     this.install(pat);
-    if (this.playing) this.x.sched_reset(this.sched, this.now() + LEAD);
+    if (this.playing) this.reschedule();
+  }
+
+  private reschedule(): void {
+    this.x.dsp_clear_pending(this.dsp);
+    this.x.sched_reset(this.sched, this.now() + LEAD);
+    this.scheduleTick();
   }
 
   private install(pat: Pat): void {

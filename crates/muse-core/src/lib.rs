@@ -326,6 +326,14 @@ pub unsafe extern "C" fn dsp_flush(h: i32) {
     }
 }
 
+/// Cancel pending notes without stopping voices already sounding.
+#[no_mangle]
+pub unsafe extern "C" fn dsp_clear_pending(h: i32) {
+    if h != 0 {
+        (*(h as *mut dsp::Dsp)).clear_pending();
+    }
+}
+
 /// # Safety
 /// `h` must be a live handle from [`dsp_new`].
 #[no_mangle]

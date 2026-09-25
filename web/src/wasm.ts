@@ -25,6 +25,7 @@ export interface CoreExports {
   dsp_schedule(h: number, atSec: number, durSec: number, ctl: number, sound: number, soundLen: number): number;
   dsp_process(h: number, l: number, r: number, frames: number, baseFrame: number): void;
   dsp_flush(h: number): void;
+  dsp_clear_pending(h: number): void;
   dsp_stats(h: number): number;
   dsp_free(h: number): void;
 }

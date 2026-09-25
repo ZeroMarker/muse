@@ -7,6 +7,7 @@
 //                                             t = abs ctx sec, d = dur sec,
 //                                             c = Float64Array(12), s = sound
 //   { type: 'flush' }                         kill everything (stop)
+//   { type: 'clear_pending' }                 cancel queued notes (pattern/tempo change)
 
 /* eslint-env worker */
 
@@ -92,6 +93,9 @@ class MuseProcessor extends AudioWorkletProcessor {
       }
       case "flush":
         this.x.dsp_flush(this.h);
+        break;
+      case "clear_pending":
+        this.x.dsp_clear_pending(this.h);
         break;
       default:
         break;
