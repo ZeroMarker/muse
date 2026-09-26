@@ -4,6 +4,12 @@ Live-coded music in the browser — a Strudel/Sonic-Pi-style DSL with a Rust
 clock, scheduler, and audio engine. The same DSL also runs in a terminal and
 renders audio offline.
 
+## User guide
+
+Read the **[Muse DSL 用户指南（中文）](docs/DSL_GUIDE.zh-CN.md)** for a hands-on
+introduction to rhythms, melodies, instruments, effects, samples, and exports.
+All JavaScript examples can be pasted into the Web UI.
+
 ## Web UI
 
 Open **[muse.20070809.xyz](https://muse.20070809.xyz)** and sign in with the
@@ -231,7 +237,7 @@ Mini-notation (strings):
 "c3 e3 g4"        note names      "60 62 64"      midi numbers
 ```
 
-Functions (also chainable as methods):
+Functions (most transforms and controls also support chainable methods):
 
 ```js
 stack(a, b)                 // parallel layers
@@ -239,9 +245,9 @@ cat(a, b)                   // sequence across one cycle
 alt(a, b)                   // one per cycle
 fast(k, p)  slow(k, p)      // time warp
 rev(p)                      // mirror each cycle
-every(4, fast(2), p)        // transform every n-th cycle
+every(4, q => q.fast(2), p)        // transform every n-th cycle
 sometimes(0.5, rev, p)      // probabilistic transform
-chunk(4, fast(2), p)        // cycle split in n slots, transform slot cycle%n
+chunk(4, q => q.fast(2), p)        // cycle split in n slots, transform slot cycle%n
 euclid(3, 8, p)             // x..x..x.
 struct("x.x.x.", p)         // mask gates the pattern
 shift(0.25, p)              // move in cycles
