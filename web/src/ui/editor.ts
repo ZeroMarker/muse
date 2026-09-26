@@ -20,7 +20,7 @@ const DOCS: Record<string, string> = {
   shift: "shift(cycles, pat) — move the pattern in time",
   struct: "struct(mask, pat) — mask like 'x.x..x..' gates the pattern",
   euclid: "euclid(k, n, pat, rot?) — k hits over n steps",
-  sound: "sound(name, pat) — assign an instrument (bd sn hh oh cp tom sine saw square tri noise)",
+  sound: "sound(name, pat) — assign an instrument (bd sn hh oh cp tom sine saw square tri noise pulse organ)",
   note: "note(midi, pat) or note('c3 e3 g3') — pitch",
   transpose: "transpose(semis, pat) — shift all notes",
   gain: "gain(v, pat) — volume 0..1",
@@ -31,6 +31,8 @@ const DOCS: Record<string, string> = {
   decay: "decay(sec, pat) — envelope decay",
   sustain: "sustain(v, pat) — envelope sustain level",
   release: "release(sec, pat) — envelope release",
+  echo: "echo(repeats, cycles, feedback, pat) — cycle-synced repeats (0–8)",
+  chorus: "chorus(depth, pat) — stereo detune (0–0.1)",
   delay: "delay(v, pat) — delay send 0..1",
   speed: "speed(v, pat) — playback rate of the oscillator",
   crush: "crush(v, pat) — bitcrush 0..1",
@@ -119,4 +121,17 @@ export function createEditor(container: HTMLElement, initial: string): monaco.ed
     wordWrap: "on",
     smoothScrolling: true,
   });
+}
+
+export function showEditorError(editor: monaco.editor.IStandaloneCodeEditor, error?: { error: string; line?: number; column?: number }): void {
+  const model = editor.getModel();
+  if (!model) return;
+  const line = Math.min(model.getLineCount(), Math.max(1, error?.line ?? 1));
+  const column = Math.min(model.getLineMaxColumn(line), Math.max(1, error?.column ?? 1));
+  monaco.editor.setModelMarkers(model, "muse", error ? [{
+    severity: monaco.MarkerSeverity.Error, message: error.error,
+    startLineNumber: line, endLineNumber: line,
+    startColumn: column, endColumn: Math.min(model.getLineMaxColumn(line), column + 1),
+  }] : []);
+  if (error?.line) editor.revealPositionInCenter({ lineNumber: line, column });
 }

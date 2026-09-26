@@ -2,7 +2,9 @@ import "./styles.css";
 
 import { engine } from "./audio/engine";
 import { evaluate } from "./repl";
-import { createEditor } from "./ui/editor";
+import { EXAMPLES } from "./examples";
+import ExportWorker from "./audio/export-worker?worker";
+import { createEditor, showEditorError } from "./ui/editor";
 import { Visualizer } from "./ui/visualizer";
 
 const INITIAL = `// muse — live-coded music · ctrl+enter runs the editor
@@ -92,21 +94,101 @@ function setStatus(ready: boolean): void {
 
 // --- editor ----------------------------------------------------------------
 
-const editor = createEditor($("editor"), INITIAL);
+const DRAFT_KEY = "muse.draft.v1";
+const BACKUP_KEY = "muse.draft.backup.v1";
+function readDraft(key: string): string | null {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+const editor = createEditor($("editor"), readDraft(DRAFT_KEY) ?? INITIAL);
+function saveDraft(): void {
+  try {
+    localStorage.setItem(DRAFT_KEY, editor.getValue());
+    $("draft-status").textContent = "draft saved";
+  } catch { $("draft-status").textContent = "draft could not be saved"; }
+}
+editor.onDidChangeModelContent(() => { saveDraft(); showEditorError(editor); });
+const restoreButton = $<HTMLButtonElement>("restore");
+restoreButton.disabled = readDraft(BACKUP_KEY) === null;
+$<HTMLSelectElement>("example").addEventListener("change", (event) => {
+  const select = event.target as HTMLSelectElement;
+  const example = select.value === "default" ? INITIAL : EXAMPLES[select.value];
+  if (!example) return;
+  try {
+    localStorage.setItem(BACKUP_KEY, editor.getValue());
+    restoreButton.disabled = false;
+  } catch { log("cannot back up draft; example was not loaded", "error"); return; }
+  editor.setValue(example);
+  select.value = "";
+  editor.focus();
+});
+restoreButton.addEventListener("click", () => {
+  const backup = readDraft(BACKUP_KEY);
+  if (backup !== null) {
+    const current = editor.getValue();
+    try { localStorage.setItem(BACKUP_KEY, current); } catch { return; }
+    editor.setValue(backup);
+  }
+});
+$<HTMLInputElement>("sample-file").addEventListener("change", async (event) => {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  try {
+    if (file.size > 50 * 1024 * 1024) throw new Error("audio file must be smaller than 50 MiB");
+    const name = $<HTMLInputElement>("sample-name").value.trim();
+    await engine.loadSample(name, await file.arrayBuffer());
+    log(`sample loaded: sound("${name}", "x*4") · speed(2, …) doubles pitch`, "ok");
+    setStatus(engine.audioReady);
+  } catch (error) { log(String(error), "error"); }
+  finally { input.value = ""; }
+});
+$<HTMLButtonElement>("export").addEventListener("click", () => {
+  const result = evaluate(editor.getValue());
+  if (!result.ok) { showEditorError(editor, result); log(result.error, "error"); return; }
+  const seconds = Number($<HTMLInputElement>("export-seconds").value);
+  if (!Number.isFinite(seconds) || seconds < 1 || seconds > 300) { log("export duration must be 1–300 seconds", "error"); return; }
+  const button = $<HTMLButtonElement>("export");
+  button.disabled = true;
+  button.textContent = "rendering…";
+  const worker = new ExportWorker();
+  const finish = () => { worker.terminate(); button.disabled = false; button.textContent = "download WAV"; };
+  worker.onerror = (event) => { log(event.message, "error"); finish(); };
+  worker.onmessage = (event) => {
+    if (event.data.error) log(event.data.error, "error");
+    else {
+      const url = URL.createObjectURL(new Blob([event.data.wav], { type: "audio/wav" }));
+      const link = document.createElement("a");
+      link.href = url; link.download = "muse.wav"; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      log(`exported ${seconds}s WAV`, "ok");
+    }
+    finish();
+  };
+  worker.postMessage({ code: editor.getValue(), seconds, cps: engine.cps,
+    wasmUrl: new URL("muse_core.wasm", document.baseURI).href, samples: [...engine.samples] });
+});
 
 let everEvaluated = false;
+let running = false;
+let transportVersion = 0;
 
 async function run(): Promise<void> {
+  if (running) return;
   const code = editor.getValue();
   const t0 = performance.now();
   const res = evaluate(code);
   if (!res.ok) {
-    log(`✗ ${res.error}`, "error");
+    showEditorError(editor, res);
+    log(`✗ ${res.error}${res.line ? ` (${res.line}:${res.column})` : ""}`, "error");
     editor.focus();
     return;
   }
+  showEditorError(editor);
+  running = true;
+  const version = ++transportVersion;
   try {
     await engine.initIfNeeded();
+    if (version !== transportVersion) return;
     engine.setPattern(res.pattern.pat);
     if (!engine.playing) await engine.play();
     everEvaluated = true;
@@ -118,7 +200,7 @@ async function run(): Promise<void> {
     if (lastVisual) viz.draw(lastVisual.evs, lastVisual.lo, lastVisual.hi, lastVisual.pos, engine.cps);
   } catch (e) {
     log(`✗ ${e instanceof Error ? e.message : String(e)}`, "error");
-  }
+  } finally { running = false; }
 }
 
 async function play(): Promise<void> {
@@ -135,6 +217,7 @@ async function play(): Promise<void> {
 }
 
 function stop(): void {
+  transportVersion++;
   engine.stop();
   viz.clear();
   log("■ stopped");

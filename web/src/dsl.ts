@@ -43,6 +43,14 @@ export class Pattern {
     return new Pattern({ t: "struct", mask, kid: this.pat });
   }
 
+  echo(repeats = 3, cycles = 0.25, feedback = 0.5): Pattern {
+    return echo(repeats, cycles, feedback, this);
+  }
+
+  chorus(depth = 0.01): Pattern {
+    return chorus(depth, this);
+  }
+
   sound(name: string): Pattern {
     return new Pattern({ t: "setsound", sound: name, kid: this.pat });
   }
@@ -245,6 +253,22 @@ export function transpose(semis: number, x: PatLike): Pattern {
   return toPattern(x).transpose(semis);
 }
 
+/** Cycle-synced repeats; includes the original and up to eight echoes. */
+export function echo(repeats: number, cycles: number, feedback: number, x: PatLike): Pattern {
+  if (!Number.isInteger(repeats) || repeats < 0 || repeats > 8 || !Number.isFinite(cycles) || cycles <= 0
+      || !Number.isFinite(feedback) || feedback < 0 || feedback > 1) throw new Error("echo expects 0–8 repeats, positive cycles and feedback 0–1");
+  const original = toPattern(x);
+  return stack(original, ...Array.from({ length: repeats }, (_, i) =>
+    original.shift(cycles * (i + 1)).gain(feedback ** (i + 1))));
+}
+
+/** Stereo detune: dry centre plus quieter detuned left and right voices. */
+export function chorus(depth: number, x: PatLike): Pattern {
+  if (!Number.isFinite(depth) || depth < 0 || depth > 0.1) throw new Error("chorus depth must be 0–0.1");
+  const original = toPattern(x);
+  return stack(original.gain(0.5), original.speed(1 - depth).pan(0).gain(0.25), original.speed(1 + depth).pan(1).gain(0.25));
+}
+
 // --- sugar -----------------------------------------------------------------
 
 /** Map a control function over a pattern of numbers/strings. */
@@ -281,6 +305,8 @@ export const DSL = {
   crush,
   note,
   transpose,
+  echo,
+  chorus,
   silence,
   toPattern,
 } as const;

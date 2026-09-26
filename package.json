@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Live music coding DSL: Monaco \u2192 TypeScript DSL/REPL \u2192 Pattern IR \u2192 WASM (Rust clock/scheduler/DSP) \u2192 AudioWorklet",
+  "description": "Live music coding DSL: Monaco → TypeScript DSL/REPL → Pattern IR → WASM (Rust clock/scheduler/DSP) → AudioWorklet",
   "scripts": {
     "build:wasm": "bash scripts/build-wasm.sh",
     "dev": "npm run build:wasm && vite",
@@ -19,6 +19,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.2",
+    "esbuild": "^0.28.2",
     "monaco-editor": "^0.52.2",
     "playwright": "^1.63.0",
     "typescript": "^5.7.2",
@@ -27,5 +28,8 @@
   },
   "bin": {
     "muse": "dist/cli/muse.cjs"
+  },
+  "dependencies": {
+    "acorn": "^8.18.0"
   }
 }

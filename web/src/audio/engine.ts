@@ -35,7 +35,11 @@ export class Engine {
   private node: AudioWorkletNode | null = null;
   private sched = 0;
   private timer: ReturnType<typeof setInterval> | null = null;
+  private transportVersion = 0;
   private initialized = false;
+  private initializing: Promise<void> | null = null;
+
+  readonly samples = new Map<string, { data: Float32Array; rate: number }>();
 
   cps = 1;
   playing = false;
@@ -54,8 +58,26 @@ export class Engine {
   }
 
   /** Idempotent; requires a user gesture to construct the AudioContext. */
-  async init(processorUrl: string, wasmUrl: string): Promise<void> {
-    if (this.initialized) return;
+  init(processorUrl: string, wasmUrl: string): Promise<void> {
+    if (this.initialized) return Promise.resolve();
+    if (this.initializing) return this.initializing;
+    this.initializing = this.initialize(processorUrl, wasmUrl)
+      .catch(async (error) => {
+        this.node?.disconnect();
+        if (this.node) this.node.port.close();
+        if (this.sched && this.core) this.core.exports.sched_free(this.sched);
+        this.sched = 0;
+        await this.ctx?.close().catch(() => {});
+        this.ctx = null;
+        this.node = null;
+        this.core = null;
+        this.initialized = false;
+        throw error;
+      }).finally(() => { this.initializing = null; });
+    return this.initializing;
+  }
+
+  private async initialize(processorUrl: string, wasmUrl: string): Promise<void> {
     this.hooks.onLog?.("loading pattern engine (wasm)…");
     // AudioWorkletGlobalScope has no `fetch` — the main thread downloads the
     // module once and transfers the bytes to the worklet over its port.
@@ -108,15 +130,32 @@ export class Engine {
     this.sched = this.core.exports.sched_new(this.cps);
     this.initialized = true;
     this.hooks.onLog?.(
-      `engine ready (${this.ctx.sampleRate} Hz, ${this.ctx.baseLatency.toFixed(1)} ms latency) — ctrl+enter to run`,
+      `engine ready (${this.ctx.sampleRate} Hz, ${(this.ctx.baseLatency * 1000).toFixed(1)} ms latency) — ctrl+enter to run`,
     );
+  }
+
+  async loadSample(name: string, file: ArrayBuffer): Promise<void> {
+    if (!/^[a-zA-Z][a-zA-Z0-9_]{0,126}$/.test(name)) throw new Error("sample name must start with a letter and contain only letters, numbers or underscores");
+    await this.initIfNeeded();
+    const decoded = await this.ctx!.decodeAudioData(file);
+    if (decoded.duration > 30) throw new Error("samples must be at most 30 seconds");
+    const data = new Float32Array(decoded.length);
+    for (let channel = 0; channel < decoded.numberOfChannels; channel++) {
+      const source = decoded.getChannelData(channel);
+      for (let i = 0; i < data.length; i++) data[i] += source[i] / decoded.numberOfChannels;
+    }
+    this.samples.set(name, { data, rate: decoded.sampleRate });
+    this.node!.port.postMessage({ type: "sample", name, data, rate: decoded.sampleRate });
   }
 
   // --- transport -----------------------------------------------------------
 
   async play(): Promise<void> {
+    const version = ++this.transportVersion;
     await this.initIfNeeded();
+    if (version !== this.transportVersion) return;
     await this.ctx!.resume();
+    if (version !== this.transportVersion) return;
     this.exports.sched_reset(this.sched, this.ctx!.currentTime + LEAD);
     this.node!.port.postMessage({ type: "flush" });
     this.playing = true;
@@ -124,6 +163,7 @@ export class Engine {
   }
 
   stop(): void {
+    this.transportVersion++;
     this.playing = false;
     this.stopTick();
     this.node?.port.postMessage({ type: "flush" });

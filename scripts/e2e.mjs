@@ -128,6 +128,46 @@ try {
   const replError = await page.evaluate(() => Boolean(document.querySelector("#console .line.error")));
   check(!replError, "no REPL errors in console panel");
 
+  // Draft persistence, backup, diagnostics and browser WAV export.
+  await page.selectOption("#example", "drums");
+  await page.waitForFunction(() => localStorage.getItem("muse.draft.v1")?.includes("Euclidean drums"));
+  await page.reload({ waitUntil: "load" });
+  await page.waitForFunction(() => document.getElementById("editor").textContent.includes("Euclidean"));
+  check(true, "draft restored after reload");
+  await page.click("#restore");
+  check(await page.evaluate(() => !localStorage.getItem("muse.draft.v1")?.includes("Euclidean drums")), "example backup restores original code");
+  await page.selectOption("#example", "ambient");
+  await page.fill("#export-seconds", "1");
+  const downloadPromise = page.waitForEvent("download");
+  await page.click("#export");
+  const download = await downloadPromise;
+  const wav = readFileSync(await download.path());
+  check(wav.subarray(0, 4).toString() === "RIFF" && wav.length === 44 + 48000 * 4, "browser export downloads stereo WAV of requested length");
+  await page.waitForFunction(() => !document.getElementById("export").disabled);
+
+  // Load the exported audio as a custom instrument, then export a sample pattern.
+  await page.setInputFiles("#sample-file", { name: "test.wav", mimeType: "audio/wav", buffer: wav });
+  await page.waitForFunction(() => window.__muse.engine.samples.has("my_sample"));
+  check(true, "custom audio sample loaded into engine");
+  await page.locator("#editor .inputarea").focus();
+  await page.keyboard.press("Control+a");
+  await page.keyboard.insertText('sound("my_sample", "x*4")');
+  await page.click("#run");
+  await page.waitForFunction(() => window.__muse.engine.peak > 0.005);
+  check(true, "custom sample plays through worklet DSP");
+  await page.click("#stop");
+  const sampleDownload = page.waitForEvent("download");
+  await page.click("#export");
+  const sampleWav = readFileSync(await (await sampleDownload).path());
+  check(sampleWav.subarray(44).some((b) => b !== 0), "custom samples included in browser export");
+
+  await page.locator("#editor .inputarea").focus();
+  await page.keyboard.press("Control+a");
+  await page.keyboard.insertText('const a = "bd";\nnote("c3", a)');
+  await page.click("#run");
+  await page.waitForSelector("#console .line.error");
+  check((await page.textContent("#console")).includes("(2:"), "runtime error displays original line and column");
+
   check(consoleErrors.length === 0, `no browser console errors${consoleErrors.length ? `: ${consoleErrors[0]}` : ""}`);
 } catch (e) {
   check(false, `unexpected failure: ${e}`);

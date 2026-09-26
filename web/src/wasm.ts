@@ -22,6 +22,7 @@ export interface CoreExports {
   sched_peek(sched: number, lo: number, hi: number, out: number, cap: number): number;
   sched_free(sched: number): void;
   dsp_new(sampleRate: number): number;
+  dsp_load_sample(h: number, name: number, nameLen: number, data: number, frames: number, rate: number): number;
   dsp_schedule(h: number, atSec: number, durSec: number, ctl: number, sound: number, soundLen: number): number;
   dsp_process(h: number, l: number, r: number, frames: number, baseFrame: number): void;
   dsp_flush(h: number): void;
@@ -72,6 +73,19 @@ export class WasmCore {
   readBytes(ptr: number, len: number): Uint8Array {
     // buffer may have grown since other views were made — re-view each time
     return new Uint8Array(this.exports.memory.buffer, ptr, len).slice();
+  }
+
+  loadSample(dsp: number, name: string, data: Float32Array, rate: number): void {
+    const nameBytes = this.allocBytes(new TextEncoder().encode(name));
+    const pcm = this.allocBytes(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+    try {
+      if (!this.exports.dsp_load_sample(dsp, nameBytes.ptr, nameBytes.len, pcm.ptr, data.length, rate)) {
+        throw new WasmError("sample rejected (ASCII name, mono PCM, maximum 30 seconds)");
+      }
+    } finally {
+      this.free(nameBytes.ptr, nameBytes.len);
+      this.free(pcm.ptr, pcm.len);
+    }
   }
 
   lastError(): string {

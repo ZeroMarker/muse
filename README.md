@@ -60,7 +60,7 @@ muse ❯ stack("bd . hh bd . hh . hh", fast(2, "sn . . sn"))
 - commands: `:bpm [n]` `:play` `:stop` `:help` `:quit`
 
 ```sh
-npm test             # 25 rust tests + 35 TS tests + wasm build
+npm test             # Rust + TypeScript tests + wasm build
 npm run cli:test     # CLI smoke test (help/run/repl, wav roundtrip)
 npm run build        # production build → dist/
 node scripts/e2e.mjs # headless-Chromium end-to-end test (needs `npm run build`)
@@ -167,3 +167,76 @@ cli/                Terminal封装: driver, PCM sinks, TUI, offline renderer
 scripts/            build-wasm.sh, build-cli.sh, e2e.mjs, cli-test.mjs
 examples/           pattern files for `muse run`
 ```
+
+## Editor workflow
+
+The editor saves your current code locally after each change and restores it on
+reload. Selecting an example backs up the current draft; **restore previous
+draft** swaps it back. A storage status appears in the toolbar. Examples do not
+start playback until you press Run. Syntax and runtime errors show a Monaco
+marker; errors with a source location reveal the corresponding line.
+
+Choose **seconds** (1–300) and **download WAV** to render the current editor code
+at the selected BPM. Export uses a separate worker and the same deterministic
+Rust DSP as the CLI, so playback and editing stay responsive during rendering.
+The download is stereo, 48 kHz, 16-bit PCM. Export starts at cycle zero and has
+exactly the selected length; release/delay tails beyond that length are cut.
+
+To use your own audio, enter an instrument name such as `my_sample` and choose
+an audio file under **load audio**. Browser-decodable audio up to 30 seconds and
+50 MiB is supported; stereo is mixed to mono. Play it with:
+
+```js
+sound("my_sample", "x*4").gain(0.7)
+```
+
+Samples use MIDI 60 as their original pitch; `note(72, …)` or `.speed(2)` plays
+an octave higher. Samples play once, use the normal envelope/filter/pan/effects,
+and become silent at the end of their data. Samples remain available through
+Stop and pattern changes and are included in browser exports. Reloading the
+page requires loading them again; the CLI does not load sample files yet.
+Choose a unique name: sample names override built-in instruments with that name.
+
+Additional instruments: `pulse` (25% duty cycle) and `organ` (three harmonics).
+Additional effects, available as functions and chainable methods:
+
+```js
+note("c3 e3 g3").sound("organ").chorus(0.01)
+// original plus three repeats, spaced a quarter cycle apart
+note("c4 ~ e4 ~").sound("sine").echo(3, 0.25, 0.5)
+```
+
+`echo(repeats, cycles, feedback, pattern)` allows 0–8 repeats and feedback 0–1.
+`chorus(depth, pattern)` layers dry and stereo detuned voices, depth 0–0.1.
+These effects assign layer gains: echo uses 1 and successive powers of
+feedback; chorus uses 0.5 for dry and 0.25 for each detuned layer. These
+assignments replace earlier gain settings on those layers. Chorus also sets
+speed and pan on its detuned layers. Echo timing follows the live tempo.
+
+## Development prerequisites
+
+Install Node.js 22+, npm, and stable Rust with rustup. The build script installs
+`wasm32-unknown-unknown` if needed. For browser checks, install Chromium once:
+
+```sh
+npm ci
+npx playwright install --with-deps chromium
+npm run verify
+```
+
+GitHub Actions runs the same complete verification for pushes to `main` and
+pull requests. CLI realtime playback optionally uses `ffplay`, `paplay`, or
+`aplay`; offline rendering needs no audio device.
+
+## First pattern
+
+Start with `"bd ~ sn ~"`, press Ctrl+Enter, then add hats:
+
+```js
+stack("bd ~ sn ~", gain(0.3, "hh*8"))
+```
+
+Add melody with `note("c3 e3 g3 b3").sound("organ")`, combine with `stack`,
+and use `.slow(2)` for half speed. One cycle is one pass of the pattern; the BPM
+control represents cycles per minute. Press Ctrl+. to stop. Try the toolbar's
+drums, ambient, and pulse bass examples or render the files in `examples/`.

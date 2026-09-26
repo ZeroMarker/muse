@@ -10,6 +10,8 @@
 use crate::ir::{CTL_ATTACK, CTL_CRUSH, CTL_CUTOFF, CTL_DECAY, CTL_DELAY, CTL_GAIN, CTL_NOTE,
                 CTL_PAN, CTL_RESONANCE, CTL_RELEASE, CTL_SPEED, CTL_SUSTAIN, NCTL};
 
+use std::{collections::HashMap, sync::Arc};
+
 const MAX_VOICES: usize = 128;
 const MAX_PENDING: usize = 4096;
 /// Master gain: stacked layers used to sit on the soft-clip ceiling.
@@ -22,6 +24,8 @@ enum Wave {
     Square,
     Tri,
     Noise,
+    Pulse,
+    Organ,
     Bd,
     Sn,
     Hh,
@@ -37,6 +41,8 @@ fn wave_from_name(s: &str) -> Wave {
         "square" | "sq" => Wave::Square,
         "tri" | "triangle" => Wave::Tri,
         "noise" | "nz" => Wave::Noise,
+        "pulse" => Wave::Pulse,
+        "organ" => Wave::Organ,
         "bd" | "kick" => Wave::Bd,
         "sn" | "snare" => Wave::Sn,
         "hh" | "hat" | "hhc" => Wave::Hh,
@@ -51,15 +57,24 @@ fn midi_to_freq(m: f64) -> f64 {
     440.0 * (2.0f64).powf((m - 69.0) / 12.0)
 }
 
+#[derive(Clone)]
+struct Sample {
+    data: Arc<Vec<f32>>,
+    rate: f64,
+}
+
 struct Pending {
     start_frame: i64,
     dur: f64,
     ctl: [f64; NCTL],
     wave: Wave,
+    sample: Option<Sample>,
 }
 
 struct Voice {
     wave: Wave,
+    sample: Option<Sample>,
+    sample_speed: f64,
     start_frame: i64,
     dur: f64, // seconds (gate)
     // envelope
@@ -140,7 +155,13 @@ impl Voice {
             }
         }
 
-        let raw = match self.wave {
+        let raw = if let Some(sample) = &self.sample {
+            let position = t * sample.rate * self.sample_speed;
+            let i = position.floor() as usize;
+            let a = sample.data.get(i).copied().unwrap_or(0.0) as f64;
+            let b = sample.data.get(i + 1).copied().unwrap_or(0.0) as f64;
+            a + (b - a) * (position - position.floor())
+        } else { match self.wave {
             Wave::Sine => (self.phase * std::f64::consts::TAU).sin(),
             Wave::Saw => self.phase * 2.0 - 1.0,
             Wave::Square => {
@@ -150,7 +171,11 @@ impl Voice {
                     -1.0
                 }
             }
-            Wave::Tri => 2.0 * (self.phase * 2.0).abs() - 1.0,
+            Wave::Tri => 1.0 - 4.0 * (self.phase - 0.5).abs(),
+            Wave::Pulse => if self.phase < 0.25 { 1.0 } else { -1.0 / 3.0 },
+            Wave::Organ => ((self.phase * std::f64::consts::TAU).sin()
+                + 0.5 * (self.phase * std::f64::consts::TAU * 2.0).sin()
+                + 0.25 * (self.phase * std::f64::consts::TAU * 3.0).sin()) / 1.75,
             Wave::Noise => self.next_noise(),
             Wave::Bd => {
                 let click = if t < 0.008 { self.next_noise() * 0.5 } else { 0.0 };
@@ -162,7 +187,7 @@ impl Voice {
             }
             Wave::Hh | Wave::Oh | Wave::Cp => self.next_noise(),
             Wave::Tom => (self.phase * std::f64::consts::TAU).sin(),
-        };
+        }};
 
         let mut v = raw * env;
 
@@ -199,6 +224,7 @@ impl Voice {
 
 pub struct Dsp {
     sr: f64,
+    samples: HashMap<String, Sample>,
     pending: Vec<Pending>,
     voices: Vec<Voice>,
     delay: Vec<f32>,
@@ -217,6 +243,7 @@ impl Dsp {
         let dlen = (sr * 0.4).max(sr * 0.1) as usize;
         Dsp {
             sr,
+            samples: HashMap::new(),
             pending: Vec::new(),
             voices: Vec::new(),
             delay: vec![0.0; dlen],
@@ -225,6 +252,19 @@ impl Dsp {
             spawned_total: 0,
             first_at: f64::NAN,
         }
+    }
+
+    pub fn load_sample(&mut self, name: &str, data: &[f32], rate: f64) -> bool {
+        if name.is_empty() || name.len() > 127 || !name.is_ascii() || data.is_empty()
+            || !rate.is_finite() || !(8000.0..=192000.0).contains(&rate)
+            || data.len() > (rate * 30.0) as usize {
+            return false;
+        }
+        self.samples.insert(name.to_owned(), Sample {
+            data: Arc::new(data.iter().map(|v| if v.is_finite() { v.clamp(-1.0, 1.0) } else { 0.0 }).collect()),
+            rate,
+        });
+        true
     }
 
     /// Queue a note at absolute time `at_sec`.
@@ -242,6 +282,7 @@ impl Dsp {
             dur: dur_sec.max(0.01),
             ctl: *ctl,
             wave: wave_from_name(sound),
+            sample: self.samples.get(sound).cloned(),
         });
         self.pending.sort_by_key(|p| p.start_frame);
     }
@@ -249,7 +290,7 @@ impl Dsp {
     fn spawn(&mut self, p: &Pending) {
         let c = p.ctl;
         let wave = p.wave;
-        let is_drum = matches!(wave, Wave::Bd | Wave::Sn | Wave::Hh | Wave::Oh | Wave::Cp | Wave::Tom);
+        let is_drum = p.sample.is_none() && matches!(wave, Wave::Bd | Wave::Sn | Wave::Hh | Wave::Oh | Wave::Cp | Wave::Tom);
 
         let freq = midi_to_freq(clamp_def(c[CTL_NOTE], -20.0, 140.0, 60.0))
             * clamp_def(c[CTL_SPEED], 0.01, 16.0, 1.0);
@@ -306,6 +347,9 @@ impl Dsp {
 
         let v = Voice {
             wave,
+            sample: p.sample.clone(),
+            sample_speed: clamp_def(c[CTL_SPEED], 0.01, 16.0, 1.0)
+                * (2.0f64).powf((clamp_def(c[CTL_NOTE], -20.0, 140.0, 60.0) - 60.0) / 12.0),
             start_frame: p.start_frame,
             dur,
             a,
@@ -476,6 +520,41 @@ mod tests {
 
     fn default_ctl() -> [f64; NCTL] {
         DEFAULTS
+    }
+
+    #[test]
+    fn samples_play_at_requested_speed_and_end() {
+        let mut d = Dsp::new(48000.0);
+        assert!(!d.load_sample("bad", &[], 48000.0));
+        assert!(d.load_sample("sample", &vec![0.5; 480], 48000.0));
+        let mut ctl = default_ctl();
+        ctl[CTL_SPEED] = 2.0;
+        ctl[CTL_ATTACK] = 0.0001;
+        ctl[CTL_CUTOFF] = 1000.0;
+        d.schedule(0.0, 1.0, &ctl, "sample");
+        let mut l = vec![0.0; 256];
+        let mut r = vec![0.0; 256];
+        d.process(&mut l, &mut r, 0);
+        assert!(l[100].abs() > 0.01);
+        for q in 1..20 { d.process(&mut l, &mut r, q * 256); }
+        assert!(l.iter().all(|v| v.abs() < 0.0001));
+        d.flush();
+        d.schedule(0.0, 1.0, &ctl, "sample");
+        d.process(&mut l, &mut r, 0);
+        assert!(l[100].abs() > 0.01, "flush must preserve registered samples");
+    }
+
+    #[test]
+    fn new_timbres_produce_finite_audio() {
+        for sound in ["pulse", "organ", "tri"] {
+            let mut d = Dsp::new(48000.0);
+            d.schedule(0.0, 0.1, &default_ctl(), sound);
+            let mut l = vec![0.0; 2048];
+            let mut r = vec![0.0; 2048];
+            d.process(&mut l, &mut r, 0);
+            assert!(l.iter().all(|v| v.is_finite() && v.abs() <= 1.0));
+            assert!(l.iter().any(|v| v.abs() > 0.01));
+        }
     }
 
     #[test]
