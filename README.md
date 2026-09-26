@@ -170,6 +170,13 @@ examples/           pattern files for `muse run`
 
 ## Editor workflow
 
+The default example is a looping arrangement of Pachelbel’s **Canon in D**,
+with the eight-note ground bass, chord accompaniment, and three imitative
+melody voices. The initial tempo is 90 bpm. Select **Canon in D** from the
+example menu to load it over a saved draft. The unedited previous default
+is migrated automatically; edited drafts are preserved. The source is
+[examples/canon.js](examples/canon.js).
+
 The editor saves your current code locally after each change and restores it on
 reload. Selecting an example backs up the current draft; **restore previous
 draft** swaps it back. A storage status appears in the toolbar. Examples do not

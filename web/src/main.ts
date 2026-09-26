@@ -2,12 +2,12 @@ import "./styles.css";
 
 import { engine } from "./audio/engine";
 import { evaluate } from "./repl";
-import { EXAMPLES } from "./examples";
+import { EXAMPLES, DEFAULT_EXAMPLE } from "./examples";
 import ExportWorker from "./audio/export-worker?worker";
 import { createEditor, showEditorError } from "./ui/editor";
 import { Visualizer } from "./ui/visualizer";
 
-const INITIAL = `// muse — live-coded music · ctrl+enter runs the editor
+const PREVIOUS_DEFAULT = `// muse — live-coded music · ctrl+enter runs the editor
 // mini-notation: "bd [hh hh] <sn cp> bd*2 hh/2 . =rest"
 
 const drums = stack(
@@ -99,19 +99,22 @@ const BACKUP_KEY = "muse.draft.backup.v1";
 function readDraft(key: string): string | null {
   try { return localStorage.getItem(key); } catch { return null; }
 }
-const editor = createEditor($("editor"), readDraft(DRAFT_KEY) ?? INITIAL);
+const savedDraft = readDraft(DRAFT_KEY);
+const initialCode = savedDraft === null || savedDraft === PREVIOUS_DEFAULT ? DEFAULT_EXAMPLE : savedDraft;
+const editor = createEditor($("editor"), initialCode);
 function saveDraft(): void {
   try {
     localStorage.setItem(DRAFT_KEY, editor.getValue());
     $("draft-status").textContent = "draft saved";
   } catch { $("draft-status").textContent = "draft could not be saved"; }
 }
+if (savedDraft === PREVIOUS_DEFAULT) saveDraft();
 editor.onDidChangeModelContent(() => { saveDraft(); showEditorError(editor); });
 const restoreButton = $<HTMLButtonElement>("restore");
 restoreButton.disabled = readDraft(BACKUP_KEY) === null;
 $<HTMLSelectElement>("example").addEventListener("change", (event) => {
   const select = event.target as HTMLSelectElement;
-  const example = select.value === "default" ? INITIAL : EXAMPLES[select.value];
+  const example = select.value === "default" ? DEFAULT_EXAMPLE : EXAMPLES[select.value];
   if (!example) return;
   try {
     localStorage.setItem(BACKUP_KEY, editor.getValue());
