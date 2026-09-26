@@ -4,8 +4,11 @@
 //
 //   node scripts/e2e.mjs
 
+import { spawnSync } from "node:child_process";
+import { parseMidi } from "midi-file";
 import { createServer } from "node:http";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { extname, join, normalize } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { chromium } from "playwright";
@@ -161,12 +164,62 @@ try {
   const sampleWav = readFileSync(await (await sampleDownload).path());
   check(sampleWav.subarray(44).some((b) => b !== 0), "custom samples included in browser export");
 
+  // All browser codec exports: decode real downloads instead of trusting filenames.
+  const codecDirectory = mkdtempSync(join(tmpdir(), "muse-browser-codecs-"));
+  try {
+    await page.waitForFunction(() => !document.getElementById("export").disabled);
+    await page.locator("#editor .inputarea").focus();
+    await page.keyboard.press("Control+a");
+    await page.keyboard.insertText('note("d4 f#4 a4").sound("tri").cutoff(3000).gain(0.4)');
+    let referencePcm = null;
+    for (const [format, codec] of [["wav", "pcm_s16le"], ["mp3", "mp3"], ["flac", "flac"], ["ogg", "vorbis"], ["aac", "aac"], ["m4a", "aac"], ["mid", null]]) {
+      await page.waitForFunction(() => !document.getElementById("export").disabled);
+      await page.selectOption("#export-format", format);
+      const downloading = page.waitForEvent("download", { timeout: 120000 });
+      await page.click("#export");
+      const downloaded = await downloading;
+      check(downloaded.suggestedFilename() === "muse." + format, format + " browser filename matches format");
+      const path = join(codecDirectory, "muse." + format);
+      await downloaded.saveAs(path);
+      if (format === "mid") {
+        const midi = parseMidi(readFileSync(path));
+        check(midi.header.format === 1 && midi.tracks.some((track) => track.some((e) => e.type === "noteOn")), "browser MIDI contains playable notes");
+        continue;
+      }
+      const probe = spawnSync("ffprobe", ["-v", "error", "-show_streams", "-of", "json", path], { encoding: "utf8" });
+      const stream = probe.status === 0 ? JSON.parse(probe.stdout).streams[0] : null;
+      check(stream?.codec_name === codec && stream?.channels === 2 && Number(stream?.sample_rate) === 48000, format + " browser codec/stereo/sample rate verified");
+      const decoded = spawnSync("ffmpeg", ["-v", "error", "-i", path, "-f", "s16le", "-acodec", "pcm_s16le", "-"], { maxBuffer: 4 * 1024 * 1024 });
+      check(decoded.status === 0 && decoded.stdout.length > 48000 * 4 * 0.9 && decoded.stdout.some((b) => b !== 0), format + " browser download decodes to audible PCM");
+      if (format === "wav") referencePcm = decoded.stdout;
+      if (format === "flac") check(decoded.stdout.equals(referencePcm), "browser FLAC is bit-exact against WAV");
+    }
+  } finally { rmSync(codecDirectory, { recursive: true, force: true }); }
+  await page.waitForFunction(() => !document.getElementById("export").disabled);
+  await page.selectOption("#export-format", "wav");
+
   await page.locator("#editor .inputarea").focus();
   await page.keyboard.press("Control+a");
   await page.keyboard.insertText('const a = "bd";\nnote("c3", a)');
   await page.click("#run");
   await page.waitForSelector("#console .line.error");
   check((await page.textContent("#console")).includes("(2:"), "runtime error displays original line and column");
+
+  // A broken encoder asset must recover the export UI and still allow WAV.
+  const failurePage = await browser.newPage();
+  try {
+    await failurePage.route("**/*ffmpeg-core*.wasm", (route) => route.fulfill({ status: 404, body: "not found" }));
+    await failurePage.goto("http://127.0.0.1:" + PORT + "/", { waitUntil: "load" });
+    await failurePage.fill("#export-seconds", "1");
+    await failurePage.selectOption("#export-format", "mp3");
+    await failurePage.click("#export");
+    await failurePage.waitForSelector("#console .line.error", { timeout: 30000 });
+    check(await failurePage.locator("#export").isEnabled() && await failurePage.locator("#export-format").isEnabled(), "encoder load failure restores export controls");
+    await failurePage.selectOption("#export-format", "wav");
+    const recovery = failurePage.waitForEvent("download");
+    await failurePage.click("#export");
+    check((await recovery).suggestedFilename() === "muse.wav", "WAV works after encoder loading fails");
+  } finally { await failurePage.close(); }
 
   check(consoleErrors.length === 0, `no browser console errors${consoleErrors.length ? `: ${consoleErrors[0]}` : ""}`);
 } catch (e) {

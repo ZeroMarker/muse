@@ -14,7 +14,8 @@ as the existing application subdomains. No Vite process is required.
 | `/etc/caddy/muse.caddy` | Muse site configuration |
 | `/etc/caddy/Caddyfile` | Main configuration; imports the Muse site |
 
-Each release contains `index.html`, `muse_core.wasm`, and `assets/`. CLI output
+Each release contains `index.html`, `muse_core.wasm`, and `assets/`, including
+the on-demand audio encoder JS/WASM files. Copy the entire assets directory. CLI output
 is not copied to the web release. Caddy needs read permission on these files
 and traversal permission on their parent directories.
 
@@ -56,6 +57,7 @@ intended checkout and finish validation before switching the active release.
 ```sh
 cd /home/ubuntu/muse
 npm ci
+sudo apt-get install -y ffmpeg  # ffmpeg/ffprobe for codec verification
 # One-time browser setup, if Chromium is not installed:
 npx playwright install --with-deps chromium
 npm run verify
@@ -99,7 +101,9 @@ curl --user admin -I https://muse.20070809.xyz/
 An unauthenticated request should return **401** with a login challenge; an
 authenticated request should return **200**. Open the site, sign in, select
 **Canon in D**, and click **Run** to check playback. Browsers require a user
-action before starting audio.
+action before starting audio. Export MP3 or FLAC once to check that encoder
+assets load through the authenticated HTTPS site. WAV and MIDI work without
+loading those assets.
 
 To inspect origin HTTPS without Cloudflare:
 

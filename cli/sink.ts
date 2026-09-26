@@ -114,7 +114,7 @@ function tryStream(spec: { label: string; cmd: string; args: string[] }, onWarn:
   };
 }
 
-/** Play a finished wav file once (used by `muse run --play`).
+/** Play a finished audio file once (used by `muse run --play`).
  *  Returns the child process, or null when no player exists. */
 export function playFile(path: string, onWarn: (m: string) => void): ChildProcess | null {
   if (has("ffplay", ["-version"])) {

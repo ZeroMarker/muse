@@ -10,6 +10,9 @@ import { loadCore } from "./core";
 import { Driver } from "./driver";
 import { createSink, playFile } from "./sink";
 import { TerminalViz } from "./tui";
+import { encodeAudio, outputFormat } from "./export";
+import { renderMidi } from "../web/src/midi";
+import { EXPORT_FORMATS } from "../web/src/export-formats";
 import { SAMPLE_RATE, encodeWav, renderOffline, rms } from "./wav";
 
 const VERSION = "0.1.0";
@@ -19,11 +22,12 @@ const USAGE = `muse ${VERSION} — live music DSL for the terminal
 
   muse                      interactive REPL (same DSL as the browser)
   muse repl [--no-audio]    explicit REPL
-  muse run <file> [opts]    render a pattern file to wav
+  muse run <file> [opts]    render a pattern file to audio or MIDI
 
   run options:
     --seconds <n>     length to render        (default 8)
-    -o, --out <path>  output wav              (default <file>.wav)
+    -o, --out <path>  output file             (default <file>.<format>)
+    --format <name>   wav mp3 flac ogg aac m4a mid (default: extension or wav)
     --bpm <n>         tempo                   (default 120)
     --no-play         don't play the result
     --play            play even when piped
@@ -41,6 +45,7 @@ interface Flags {
   _: string[];
   seconds: number;
   out: string | null;
+  format: string | null;
   bpm: number;
   play: boolean | null;
   audio: boolean;
@@ -52,6 +57,7 @@ function parseArgs(argv: string[]): Flags {
     _: [],
     seconds: 8,
     out: null,
+    format: null,
     bpm: 120,
     play: null,
     audio: true,
@@ -64,7 +70,10 @@ function parseArgs(argv: string[]): Flags {
     else if (a === "repl") f.cmd = "repl";
     else if (a === "--seconds") f.seconds = Number(argv[++i]) || 8;
     else if (a === "-o" || a === "--out") f.out = argv[++i];
-    else if (a === "--bpm") f.bpm = Number(argv[++i]) || 120;
+    else if (a === "--format") {
+      if (!argv[i + 1]) throw new Error("--format needs a value");
+      f.format = argv[++i];
+    } else if (a === "--bpm") f.bpm = Number(argv[++i]) || 120;
     else if (a === "--no-play") f.play = false;
     else if (a === "--play") f.play = true;
     else if (a === "--no-audio") f.audio = false;
@@ -93,17 +102,24 @@ async function runCommand(f: Flags): Promise<number> {
     return 1;
   }
 
+  const format = outputFormat(f.format, f.out);
+  const out = f.out ?? basename(file).replace(/\.[^.]*$/, "") + "." + EXPORT_FORMATS[format].extension;
   const core = await loadCore();
   const cps = f.bpm / 60;
+  if (format === "mid") {
+    writeFileSync(out, renderMidi(core, res.pattern.pat, f.seconds, cps));
+    console.log("✓ " + out + " — MIDI notes, " + f.seconds + "s @ " + f.bpm + " bpm (audio effects and samples are not embedded)");
+    return 0;
+  }
   const pcm = renderOffline(core, res.pattern.pat, f.seconds, cps);
   const wav = encodeWav(pcm, SAMPLE_RATE, 2);
-  const out = f.out ?? basename(file).replace(/\.[^.]*$/, "") + ".wav";
-  writeFileSync(out, wav);
+  const encoded = encodeAudio(wav, format);
+  writeFileSync(out, encoded);
 
   let peak = 0;
   for (let i = 0; i < pcm.length; i++) peak = Math.max(peak, Math.abs(pcm[i]) / 32768);
   console.log(
-    `✓ ${out} — ${f.seconds}s @ ${f.bpm} bpm, ${(wav.length / 1024).toFixed(0)} KB, ` +
+    `✓ ${out} — ${f.seconds}s @ ${f.bpm} bpm, ${(encoded.length / 1024).toFixed(0)} KB, ` +
       `rms ${rms(pcm).toFixed(3)}, peak ${peak.toFixed(3)}`,
   );
 

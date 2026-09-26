@@ -57,11 +57,35 @@ draft** swaps it back. A storage status appears in the toolbar. Examples do not
 start playback until you press Run. Syntax and runtime errors show a Monaco
 marker; errors with a source location reveal the corresponding line.
 
-Choose **seconds** (1–300) and **download WAV** to render the current editor code
-at the selected BPM. Export uses a separate worker and the same deterministic
-Rust DSP as the CLI, so playback and editing stay responsive during rendering.
-The download is stereo, 48 kHz, 16-bit PCM. Export starts at cycle zero and has
-exactly the selected length; release/delay tails beyond that length are cut.
+Choose **seconds** (1–300), select **format**, and click **download …** to
+export the current editor code at the selected BPM. Audio export uses a separate
+worker and the same deterministic Rust DSP as the CLI. All audio formats are
+stereo at 48 kHz; the source render is 16-bit PCM. Export starts at cycle zero
+and cuts release/delay tails at the selected length. Compressed formats can
+contain small encoder padding.
+
+| Format | Encoding | Use |
+| --- | --- | --- |
+| WAV | 16-bit PCM, uncompressed | Editing and compatibility |
+| FLAC | Lossless compression of the PCM render | Smaller lossless files |
+| MP3 | 192 kbps | Sharing and general playback |
+| OGG | Vorbis, quality 5 | Vorbis players |
+| AAC | 192 kbps, ADTS container (.aac) | Raw AAC audio |
+| M4A | AAC at 192 kbps, MP4 container (.m4a) | AAC in a common music container |
+| MIDI | Standard MIDI File type 1, 480 ticks per beat | Editable notes in a DAW |
+
+The browser encodes locally and includes loaded samples in every audio format.
+Selecting a compressed audio format loads the bundled encoder on demand; its
+WASM asset is about 31 MiB before HTTP compression. It is served from the same
+site, with no runtime CDN dependency. WAV and MIDI do not load this encoder.
+
+MIDI exports timing, rounded semitone pitches (including speed), velocity,
+tempo, and approximate General MIDI instruments. Drums use the percussion
+channel. It does not embed sample files, filters, envelopes, panning, crush, or
+audio delay. Pattern-level echo/chorus contribute notes, with simultaneous
+unisons merged and overlapping repeated pitches retriggered. Up to 15 melodic
+instruments and 100,000 notes are supported; custom samples are represented by
+piano notes. The result's sound depends on the MIDI player.
 
 To use your own audio, enter an instrument name such as `my_sample` and choose
 an audio file under **load audio**. Browser-decodable audio up to 30 seconds and
@@ -133,6 +157,9 @@ npm run build:cli            # → dist/cli/muse.cjs (single file, wasm included
 ./muse                       # interactive REPL with a live timeline
 ./muse run examples/canon.js --bpm 90 --seconds 24 -o canon.wav
 ./muse run examples/demo.js --bpm 120 --seconds 8 -o demo.wav
+./muse run examples/canon.js --bpm 90 --seconds 24 -o canon.mp3
+./muse run examples/canon.js --bpm 90 --seconds 24 --format flac -o canon.flac
+./muse run examples/canon.js --bpm 90 --seconds 24 --format midi -o canon.mid
 
 # or via npm / global install
 npm run cli -- --help
@@ -150,7 +177,7 @@ muse ❯ stack("bd . hh bd . hh . hh", fast(2, "sn . . sn"))
 
 - audio streams to `ffplay`/`paplay`/`aplay` when a device exists; otherwise it
   runs silently with the timeline (headless-friendly)
-- `muse run` renders **offline & deterministically** to 16-bit WAV
+- `muse run` renders PCM offline, then exports audio or MIDI
 - commands: `:bpm [n]` `:play` `:stop` `:help` `:quit`
 
 The Web UI starts at 90 bpm; the CLI defaults to 120 bpm, so pass `--bpm 90`
@@ -158,15 +185,23 @@ for the Canon example. `--seconds` defaults to 8; rendering accepts positive
 lengths up to 300 seconds. Add `--no-play` to render without opening a player.
 `./muse` builds the CLI on demand when the bundle is missing.
 
+The CLI infers the format from the output extension or accepts `--format`
+(`wav mp3 flac ogg aac m4a mid`; `midi` is an alias for `mid`). With neither
+option it exports WAV. An explicit format must match the output extension.
+Compressed audio exports require a system **FFmpeg** installation; WAV and MIDI
+work without it. MIDI is saved without automatic playback.
+
 Web builds replace `dist/`, including any earlier CLI bundle. After a web
 build, use `./muse` or run `npm run build:cli` before invoking the bundle directly
 or a globally linked `muse` command.
 
 ## Validation
 
-Install Chromium before running browser checks:
+The complete verification requires system `ffmpeg` and `ffprobe`, as well as
+Chromium. On Ubuntu, install the codec tools, then the browser:
 
 ```sh
+sudo apt-get install -y ffmpeg
 npx playwright install --with-deps chromium
 ```
 
@@ -181,7 +216,8 @@ npm run verify       # everything above, in order
 GitHub Actions runs `npm run verify` for pushes to `main` and pull requests.
 The checks cover Rust DSP/scheduling, TypeScript DSL and WASM boundaries,
 audio initialization/retry, CLI rendering, and browser playback, draft recovery,
-WAV downloads, sample playback, and error locations.
+downloads for every export format, sample playback, and error locations.
+Codec checks probe and decode actual files, including bit-exact FLAC roundtrips.
 
 ## The pipeline
 
@@ -202,9 +238,9 @@ Monaco → JavaScript DSL / REPL → Pattern IR → Rust/WASM scheduler
 | DSP (Rust) | `crates/muse-core/src/dsp.rs` | voices, drum synths, SVF filter, envelopes, delay, soft clip |
 | AudioWorklet | `web/src/audio/processor.js` | second wasm instance; sample-accurate rendering, output meter |
 | Engine | `web/src/audio/engine.ts` | transport, 60 ms tick, event posting, hot pattern swap |
-| Offline rendering | `web/src/offline.ts`, `web/src/audio/export-worker.ts`, `cli/wav.ts` | shared DSP renderer and WAV encoder; browser rendering runs in a worker |
+| Offline rendering | `web/src/offline.ts`, `web/src/audio/export-worker.ts`, `cli/wav.ts` | shared DSP renderer, audio codecs, and MIDI note export; browser export runs in a worker |
 | Examples | `examples/canon.js`, `web/src/examples.ts` | shared default Canon source and toolbar examples |
-| CLI | `cli/*.ts` → `dist/cli/muse.cjs` | wall-clock transport, PCM sink, ANSI timeline, offline WAV |
+| CLI | `cli/*.ts` → `dist/cli/muse.cjs` | wall-clock transport, PCM sink, ANSI timeline, offline audio/MIDI |
 
 Two wasm *instances* run from one artifact: the main-thread instance owns the
 pattern + clock + scheduler; the worklet instance owns the DSP. They share no
@@ -289,8 +325,11 @@ clamped again in the DSP.
 crates/muse-core/   Rust: IR decoder, query engine, clock/scheduler, DSP → wasm32
 web/src/            TypeScript: DSL, REPL, engine, UI
 web/public/         muse_core.wasm (copied by scripts/build-wasm.sh)
-cli/                Terminal: driver, PCM sinks, TUI, offline WAV wrapper
+cli/                Terminal: driver, PCM sinks, TUI, offline audio/MIDI export
 scripts/            build-wasm.sh, build-cli.sh, e2e.mjs, cli-test.mjs
 examples/           Canon in D, ambient, pulse bass, and drum demo
 docs/               Caddy deployment and release/rollback instructions
 ```
+
+Browser codec dependencies and their source/license references are listed in
+[third-party notices](THIRD_PARTY_NOTICES.md).

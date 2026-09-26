@@ -3,7 +3,11 @@
 //   node scripts/cli-test.mjs   (build first: bash scripts/build-cli.sh)
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, mkdtempSync } from "node:fs";
+
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { parseMidi } from "midi-file";
 
 const CLI = "dist/cli/muse.cjs";
 const failures = [];
@@ -58,6 +62,36 @@ const WAV = "/tmp/muse-cli-test.wav";
     check(r2 > 0.01, `rendered audio is audible (rms=${r2.toFixed(3)})`);
     check(r.stdout.includes("✓"), "run reports stats");
   }
+}
+
+// Compressed formats: inspect actual codecs, decode audio, and verify lossless FLAC.
+{
+  const directory = mkdtempSync(join(tmpdir(), "muse-codec-test-"));
+  try {
+    for (const [format, codec] of [["mp3", "mp3"], ["flac", "flac"], ["ogg", "vorbis"], ["aac", "aac"], ["m4a", "aac"]]) {
+      const output = join(directory, "song." + format);
+      const result = spawnSync("node", [CLI, "run", "examples/demo.js", "--seconds", "2", "--no-play", "-o", output], { encoding: "utf8", timeout: 30000 });
+      check(result.status === 0 && existsSync(output), format + " inferred from extension and exported");
+      if (!existsSync(output)) continue;
+      const probe = spawnSync("ffprobe", ["-v", "error", "-show_streams", "-of", "json", output], { encoding: "utf8" });
+      const stream = probe.status === 0 ? JSON.parse(probe.stdout).streams[0] : null;
+      check(stream?.codec_name === codec && stream?.channels === 2 && Number(stream?.sample_rate) === 48000, format + " codec, stereo and 48 kHz verified");
+      const decoded = spawnSync("ffmpeg", ["-v", "error", "-i", output, "-f", "s16le", "-acodec", "pcm_s16le", "-"], { maxBuffer: 4 * 1024 * 1024 });
+      check(decoded.status === 0 && decoded.stdout.length > 48000 * 4 * 1.8 && decoded.stdout.some((b) => b !== 0), format + " decodes to audible PCM");
+      if (format === "flac") check(decoded.stdout.equals(readFileSync(WAV).subarray(44)), "FLAC roundtrip preserves every PCM sample");
+    }
+    const midiPath = join(directory, "song.mid");
+    const midi = spawnSync("node", [CLI, "run", "examples/canon.js", "--seconds", "2", "--format", "midi", "--no-play", "-o", midiPath], { encoding: "utf8" });
+    check(midi.status === 0 && existsSync(midiPath), "MIDI alias accepted and exported");
+    if (existsSync(midiPath)) {
+      const data = parseMidi(readFileSync(midiPath));
+      check(data.header.format === 1 && data.tracks.some((track) => track.some((e) => e.type === "noteOn")), "MIDI has tempo and note tracks");
+    }
+    const mismatch = spawnSync("node", [CLI, "run", "examples/demo.js", "--format", "mp3", "-o", join(directory, "wrong.wav"), "--no-play"], { encoding: "utf8" });
+    check(mismatch.status !== 0 && !existsSync(join(directory, "wrong.wav")), "mismatched output format rejected without creating a file");
+    const missing = spawnSync(process.execPath, [CLI, "run", "examples/demo.js", "--format", "mp3", "-o", join(directory, "missing.mp3"), "--no-play"], { encoding: "utf8", env: { ...process.env, PATH: "/nonexistent" } });
+    check(missing.status !== 0 && missing.stderr.includes("FFmpeg is required"), "missing FFmpeg gives actionable error");
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 }
 
 // 4. syntax error → non-zero exit

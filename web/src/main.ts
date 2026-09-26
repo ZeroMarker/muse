@@ -3,6 +3,7 @@ import "./styles.css";
 import { engine } from "./audio/engine";
 import { evaluate } from "./repl";
 import { EXAMPLES, DEFAULT_EXAMPLE } from "./examples";
+import { EXPORT_FORMATS, parseExportFormat } from "./export-formats";
 import ExportWorker from "./audio/export-worker?worker";
 import { createEditor, showEditorError } from "./ui/editor";
 import { Visualizer } from "./ui/visualizer";
@@ -145,30 +146,38 @@ $<HTMLInputElement>("sample-file").addEventListener("change", async (event) => {
   } catch (error) { log(String(error), "error"); }
   finally { input.value = ""; }
 });
+const exportFormat = $<HTMLSelectElement>("export-format");
+const updateExportLabel = () => {
+  $("export").textContent = "download " + EXPORT_FORMATS[parseExportFormat(exportFormat.value)].label;
+};
+exportFormat.addEventListener("change", updateExportLabel);
 $<HTMLButtonElement>("export").addEventListener("click", () => {
   const result = evaluate(editor.getValue());
   if (!result.ok) { showEditorError(editor, result); log(result.error, "error"); return; }
   const seconds = Number($<HTMLInputElement>("export-seconds").value);
   if (!Number.isFinite(seconds) || seconds < 1 || seconds > 300) { log("export duration must be 1–300 seconds", "error"); return; }
   const button = $<HTMLButtonElement>("export");
+  const format = parseExportFormat(exportFormat.value);
+  exportFormat.disabled = true;
   button.disabled = true;
   button.textContent = "rendering…";
   const worker = new ExportWorker();
-  const finish = () => { worker.terminate(); button.disabled = false; button.textContent = "download WAV"; };
+  const finish = () => { worker.terminate(); button.disabled = false; exportFormat.disabled = false; updateExportLabel(); };
   worker.onerror = (event) => { log(event.message, "error"); finish(); };
   worker.onmessage = (event) => {
+    if (event.data.phase) { button.textContent = event.data.phase; return; }
     if (event.data.error) log(event.data.error, "error");
     else {
-      const url = URL.createObjectURL(new Blob([event.data.wav], { type: "audio/wav" }));
+      const url = URL.createObjectURL(new Blob([event.data.bytes], { type: event.data.mime }));
       const link = document.createElement("a");
-      link.href = url; link.download = "muse.wav"; link.click();
+      link.href = url; link.download = "muse." + event.data.extension; link.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      log(`exported ${seconds}s WAV`, "ok");
+      log(`exported ${seconds}s ${EXPORT_FORMATS[format].label}`, "ok");
     }
     finish();
   };
   worker.postMessage({ code: editor.getValue(), seconds, cps: engine.cps,
-    wasmUrl: new URL("muse_core.wasm", document.baseURI).href, samples: [...engine.samples] });
+    format, baseURL: document.baseURI, wasmUrl: new URL("muse_core.wasm", document.baseURI).href, samples: [...engine.samples] });
 });
 
 let everEvaluated = false;
