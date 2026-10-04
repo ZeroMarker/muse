@@ -1,8 +1,9 @@
 // Main-thread audio engine: owns the AudioContext, the clock/scheduler
 // (wasm, main instance) and the tick loop that feeds the worklet.
 
-import { EVENT_HEADER, type Pat, type SchedEvent, unpackEvents } from "../ir";
+import { type Pat, type SchedEvent, unpackEvents } from "../ir";
 import { type CoreExports, WasmCore } from "../wasm";
+import { validateSample, validateSampleName, type SampleData } from "../samples";
 import processorUrl from "./processor.js?url";
 
 /** How far ahead we schedule, in audio seconds. */
@@ -38,8 +39,10 @@ export class Engine {
   private transportVersion = 0;
   private initialized = false;
   private initializing: Promise<void> | null = null;
+  private closing: Promise<void> = Promise.resolve();
+  private pattern: Pat | null = null;
 
-  readonly samples = new Map<string, { data: Float32Array; rate: number }>();
+  readonly samples = new Map<string, SampleData>();
 
   cps = 1;
   playing = false;
@@ -61,20 +64,29 @@ export class Engine {
   init(processorUrl: string, wasmUrl: string): Promise<void> {
     if (this.initialized) return Promise.resolve();
     if (this.initializing) return this.initializing;
-    this.initializing = this.initialize(processorUrl, wasmUrl)
+    this.initializing = this.closing.then(() => this.initialize(processorUrl, wasmUrl))
       .catch(async (error) => {
-        this.node?.disconnect();
-        if (this.node) this.node.port.close();
-        if (this.sched && this.core) this.core.exports.sched_free(this.sched);
-        this.sched = 0;
-        await this.ctx?.close().catch(() => {});
-        this.ctx = null;
-        this.node = null;
-        this.core = null;
-        this.initialized = false;
+        await this.releaseAudio();
         throw error;
       }).finally(() => { this.initializing = null; });
     return this.initializing;
+  }
+
+  private releaseAudio(): Promise<void> {
+    this.initialized = false;
+    this.stop();
+    this.node?.disconnect();
+    this.node?.port.close();
+    if (this.sched && this.core) this.core.exports.sched_free(this.sched);
+    const ctx = this.ctx;
+    this.sched = 0;
+    this.ctx = null;
+    this.node = null;
+    this.core = null;
+    this.peak = 0;
+    this.workletDiag = null;
+    this.closing = ctx ? ctx.close().catch(() => {}) : this.closing;
+    return this.closing;
   }
 
   private async initialize(processorUrl: string, wasmUrl: string): Promise<void> {
@@ -92,9 +104,6 @@ export class Engine {
       numberOfOutputs: 1,
       outputChannelCount: [2],
     });
-    this.node.addEventListener("processorerror", (ev) => {
-      this.hooks.onLog?.(`worklet processorerror: ${(ev as ErrorEvent).message ?? ev.type}`, "error");
-    });
     // The processor is only instantiated once the node joins the graph —
     // connect first, otherwise the init message below is queued forever.
     this.node.connect(this.ctx.destination);
@@ -102,7 +111,20 @@ export class Engine {
     const ready = new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error("worklet init timeout")), 10_000);
       let settled = false;
+      const node = this.node!;
+      node.addEventListener("processorerror", () => {
+        if (this.node !== node) return;
+        clearTimeout(timeout);
+        if (!settled) {
+          settled = true;
+          reject(new Error("audio processor failed during initialization"));
+        } else {
+          this.hooks.onLog?.("audio processor failed; press Run or Play to recover", "error");
+          void this.releaseAudio();
+        }
+      });
       this.node!.port.onmessage = (e) => {
+        if (this.node !== node) return;
         if (e.data.type === "ready") {
           settled = true;
           clearTimeout(timeout);
@@ -129,13 +151,15 @@ export class Engine {
 
     this.sched = this.core.exports.sched_new(this.cps);
     this.initialized = true;
+    for (const [name, sample] of this.samples) this.node.port.postMessage({ type: "sample", name, ...sample });
+    if (this.pattern) this.setPattern(this.pattern);
     this.hooks.onLog?.(
       `engine ready (${this.ctx.sampleRate} Hz, ${(this.ctx.baseLatency * 1000).toFixed(1)} ms latency) — ctrl+enter to run`,
     );
   }
 
   async loadSample(name: string, file: ArrayBuffer): Promise<void> {
-    if (!/^[a-zA-Z][a-zA-Z0-9_]{0,126}$/.test(name)) throw new Error("sample name must start with a letter and contain only letters, numbers or underscores");
+    validateSampleName(name);
     await this.initIfNeeded();
     const decoded = await this.ctx!.decodeAudioData(file);
     if (decoded.duration > 30) throw new Error("samples must be at most 30 seconds");
@@ -144,8 +168,19 @@ export class Engine {
       const source = decoded.getChannelData(channel);
       for (let i = 0; i < data.length; i++) data[i] += source[i] / decoded.numberOfChannels;
     }
-    this.samples.set(name, { data, rate: decoded.sampleRate });
-    this.node!.port.postMessage({ type: "sample", name, data, rate: decoded.sampleRate });
+    this.registerSample(name, { data, rate: decoded.sampleRate });
+  }
+
+  registerSample(name: string, sample: SampleData): void {
+    validateSample(name, sample);
+    this.samples.set(name, sample);
+    if (this.initialized) this.node!.port.postMessage({ type: "sample", name, ...sample });
+  }
+
+  removeSample(name: string): void {
+    if (!this.samples.delete(name)) return;
+    this.node?.port.postMessage({ type: "remove_sample", name });
+    if (this.playing) this.reschedule();
   }
 
   // --- transport -----------------------------------------------------------
@@ -196,12 +231,14 @@ export class Engine {
     } finally {
       this.core!.releasePattern(h);
     }
+    this.pattern = pat;
     if (this.playing && this.ctx) {
       this.reschedule();
     }
   }
 
   clearPattern(): void {
+    this.pattern = null;
     if (this.initialized) this.exports.sched_clear_pattern(this.sched);
   }
 
@@ -250,31 +287,17 @@ export class Engine {
 
     try {
       const horizon = x.sched_cycle_at(this.sched, now + LOOKAHEAD);
-      const n = x.sched_count(this.sched, horizon);
-      if (n > 0) {
-        const cap = Math.ceil(n * (EVENT_HEADER + 2 + 64)) + 64;
-        const { ptr, len } = this.core!.allocBytes(cap);
-        try {
-          const written = x.sched_query(this.sched, horizon, ptr, len);
-          if (written > 0) {
-            const evs = unpackEvents(this.core!.readBytes(ptr, written));
-            scheduled = evs.length;
-            this.scheduledTotal += evs.length;
-            this.node!.port.postMessage({
-              type: "ev",
-              evs: evs.map((e) => ({
-                t: x.sched_audio_at(this.sched, e.onsetCycle),
-                d: e.durSec,
-                c: e.ctl,
-                s: e.sound,
-              })),
-            });
-          } else if (written < 0) {
-            this.hooks.onLog?.(`sched_query failed (${written})`, "error");
-          }
-        } finally {
-          this.core!.free(ptr, len);
-        }
+      const evs = this.core!.queryScheduled(this.sched, horizon);
+      scheduled = evs.length;
+      if (evs.length) {
+        this.scheduledTotal += evs.length;
+        this.node!.port.postMessage({
+          type: "ev",
+          evs: evs.map((e) => ({
+            t: x.sched_audio_at(this.sched, e.onsetCycle),
+            d: e.durSec, c: e.ctl, s: e.sound,
+          })),
+        });
       }
 
       // visualizer: peek at the next few cycles (does not advance the cursor)

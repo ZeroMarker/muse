@@ -59,6 +59,7 @@ fn midi_to_freq(m: f64) -> f64 {
 
 #[derive(Clone)]
 struct Sample {
+    name: String,
     data: Arc<Vec<f32>>,
     rate: f64,
 }
@@ -261,9 +262,18 @@ impl Dsp {
             return false;
         }
         self.samples.insert(name.to_owned(), Sample {
+            name: name.to_owned(),
             data: Arc::new(data.iter().map(|v| if v.is_finite() { v.clamp(-1.0, 1.0) } else { 0.0 }).collect()),
             rate,
         });
+        true
+    }
+
+    pub fn remove_sample(&mut self, name: &str) -> bool {
+        if self.samples.remove(name).is_none() { return false; }
+        // Drop queued and active references so removal also frees their PCM.
+        self.pending.retain(|p| p.sample.as_ref().map_or(true, |s| s.name != name));
+        self.voices.retain(|v| v.sample.as_ref().map_or(true, |s| s.name != name));
         true
     }
 
@@ -542,6 +552,26 @@ mod tests {
         d.schedule(0.0, 1.0, &ctl, "sample");
         d.process(&mut l, &mut r, 0);
         assert!(l[100].abs() > 0.01, "flush must preserve registered samples");
+    }
+
+    #[test]
+    fn removing_samples_drops_active_and_queued_generations() {
+        let mut d = Dsp::new(48000.0);
+        assert!(d.load_sample("bd", &vec![0.5; 48000], 48000.0));
+        d.schedule(0.0, 1.0, &default_ctl(), "bd");
+        let mut l = vec![0.0; 128];
+        let mut r = vec![0.0; 128];
+        d.process(&mut l, &mut r, 0);
+        assert_eq!(d.voices.len(), 1);
+        assert!(d.load_sample("bd", &vec![0.25; 48000], 48000.0));
+        d.schedule(1.0, 1.0, &default_ctl(), "bd");
+        d.schedule(1.0, 1.0, &default_ctl(), "sn");
+        assert!(d.remove_sample("bd"));
+        assert!(d.voices.is_empty());
+        assert_eq!(d.pending.len(), 1, "unrelated notes must remain queued");
+        assert!(!d.remove_sample("bd"));
+        d.schedule(1.0, 1.0, &default_ctl(), "bd");
+        assert!(d.pending.iter().all(|p| p.sample.is_none()), "builtin instruments return after removal");
     }
 
     #[test]

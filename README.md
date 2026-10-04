@@ -54,11 +54,14 @@ is migrated automatically; edited drafts are preserved. The source is
 The editor saves your current code locally after each change and restores it on
 reload. Selecting an example backs up the current draft; **restore previous
 draft** swaps it back. A storage status appears in the toolbar. Examples do not
-start playback until you press Run. Syntax and runtime errors show a Monaco
+start playback until you press Run. If the audio processor fails, playback
+stops and the audio status resets; press Run or Play to rebuild the engine
+with its installed pattern and loaded samples. Syntax and runtime errors show a Monaco
 marker; errors with a source location reveal the corresponding line.
 
 Choose **seconds** (1–300), select **format**, and click **download …** to
-export the current editor code at the selected BPM. Audio export uses a separate
+export the current editor code at the selected BPM. Each export evaluates the
+code once in the browser and renders that resulting pattern in a worker. Audio export uses a separate
 worker and the same deterministic Rust DSP as the CLI. All audio formats are
 stereo at 48 kHz; the source render is 16-bit PCM. Export starts at cycle zero
 and cuts release/delay tails at the selected length. Compressed formats can
@@ -99,8 +102,14 @@ Samples use MIDI 60 as their original pitch; `note(72, …)` or `.speed(2)` play
 an octave higher. Samples play once, use the normal envelope/filter/pan/effects,
 and stop producing source audio at the end of their data; filters and delay
 can continue to produce a tail. Samples remain available through
-Stop and pattern changes and are included in browser exports. Reloading the
-page requires loading them again; the CLI does not load sample files yet.
+Stop and pattern changes and are included in browser exports. They are saved
+locally in browser storage and restored on reload without starting audio.
+The sample status shows whether saving succeeded; if storage is unavailable
+or full, the sample stays usable for the current session. Select a sample under
+**loaded samples** and click **delete sample** to remove it from storage and
+stop its active/queued notes. Other samples remain available. Clearing site
+data also removes saved samples. Samples stay on this browser and are not
+uploaded or synchronized.
 Sample names start with a letter and contain only ASCII letters, numbers, or
 underscores (at most 127 characters). Choose a unique name: sample names
 override built-in instruments with that name.
@@ -191,6 +200,24 @@ option it exports WAV. An explicit format must match the output extension.
 Compressed audio exports require a system **FFmpeg** installation; WAV and MIDI
 work without it. MIDI is saved without automatic playback.
 
+Load your own audio in either `run` or `repl` using repeatable
+`--sample name=path` options (requires system FFmpeg):
+
+```sh
+./muse run my-pattern.js --sample my_sample=./voice.wav --seconds 8 --no-play -o mix.wav
+./muse repl --sample my_sample=./voice.wav --sample another=./drum.flac
+```
+
+Use `sound("my_sample", "x*4")` in the pattern. Names follow the same rules as
+browser samples; files are limited to 50 MiB and 30 seconds. The CLI decodes
+them to mono at 48 kHz; MIDI uses piano notes for custom samples, including
+names that override drums. CLI sample registrations last for that invocation.
+Invalid or missing numeric arguments, durations over 300 seconds, unknown
+options, and extra pattern files fail before writing output. Durations may
+be fractional, and BPM must be finite and positive. The REPL `:bpm` command
+accepts 20–300 BPM and rejects invalid values without changing tempo.
+
+
 Web builds replace `dist/`, including any earlier CLI bundle. After a web
 build, use `./muse` or run `npm run build:cli` before invoking the bundle directly
 or a globally linked `muse` command.
@@ -216,7 +243,8 @@ npm run verify       # everything above, in order
 GitHub Actions runs `npm run verify` for pushes to `main` and pull requests.
 The checks cover Rust DSP/scheduling, TypeScript DSL and WASM boundaries,
 audio initialization/retry, CLI rendering, and browser playback, draft recovery,
-downloads for every export format, sample playback, and error locations.
+downloads for every export format, sample playback/persistence/deletion,
+processor failure recovery, strict CLI arguments, and error locations.
 Codec checks probe and decode actual files, including bit-exact FLAC roundtrips.
 
 ## The pipeline

@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import { EVENT_HEADER, NCTL, encode, unpackEvents } from "../src/ir";
 import { mini } from "../src/mini";
-import { fast, stack } from "../src/dsl";
+import { fast, stack, sound } from "../src/dsl";
 import { WasmCore } from "../src/wasm";
 
 const WASM_PATH = resolve(process.cwd(), "target/wasm32-unknown-unknown/release/muse_core.wasm");
@@ -151,5 +151,24 @@ describe("wasm boundary roundtrip", () => {
     expect(peak).toBeLessThanOrEqual(1);
 
     core.exports.dsp_free(h);
+  });
+});
+
+describe("live scheduler buffer growth", () => {
+  it("packs dense patterns with maximum-length sample names and advances once", async () => {
+    const core = await loadCore();
+    const x = core.exports;
+    const sched = x.sched_new(2);
+    const name = "s".repeat(127);
+    const handle = core.decodePattern(sound(name, fast(10, "bd")).pat);
+    try {
+      expect(x.sched_set_pattern(sched, handle)).toBe(1);
+      x.sched_reset(sched, 0);
+      const events = core.queryScheduled(sched, 0.6);
+      expect(events).toHaveLength(6);
+      expect(events.every((event) => event.sound === name)).toBe(true);
+      expect(core.queryScheduled(sched, 0.6)).toHaveLength(0);
+      expect(core.queryScheduled(sched, 1.2)).toHaveLength(6);
+    } finally { core.releasePattern(handle); x.sched_free(sched); }
   });
 });

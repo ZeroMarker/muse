@@ -355,3 +355,13 @@ pub unsafe extern "C" fn dsp_load_sample(h: i32, name: *const u8, name_len: i32,
     let samples = std::slice::from_raw_parts(data, frames as usize);
     (*(h as *mut dsp::Dsp)).load_sample(name, samples, rate) as i32
 }
+
+/// Remove a registered sample and its queued/active notes. Returns 1 if found.
+/// # Safety
+/// `name` must refer to a valid slice, and `h` must be a live DSP handle.
+#[no_mangle]
+pub unsafe extern "C" fn dsp_remove_sample(h: i32, name: *const u8, name_len: i32) -> i32 {
+    if h == 0 || name.is_null() || name_len <= 0 || name_len > 127 { return 0; }
+    let Ok(name) = std::str::from_utf8(std::slice::from_raw_parts(name, name_len as usize)) else { return 0; };
+    (*(h as *mut dsp::Dsp)).remove_sample(name) as i32
+}

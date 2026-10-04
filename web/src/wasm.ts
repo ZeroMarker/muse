@@ -1,6 +1,6 @@
 // Typed wrapper over the muse-core wasm module (see crates/muse-core/src/lib.rs).
 
-import { type Pat, encode } from "./ir";
+import { type Pat, encode, unpackEvents } from "./ir";
 
 export interface CoreExports {
   memory: WebAssembly.Memory;
@@ -23,6 +23,7 @@ export interface CoreExports {
   sched_free(sched: number): void;
   dsp_new(sampleRate: number): number;
   dsp_load_sample(h: number, name: number, nameLen: number, data: number, frames: number, rate: number): number;
+  dsp_remove_sample(h: number, name: number, nameLen: number): number;
   dsp_schedule(h: number, atSec: number, durSec: number, ctl: number, sound: number, soundLen: number): number;
   dsp_process(h: number, l: number, r: number, frames: number, baseFrame: number): void;
   dsp_flush(h: number): void;
@@ -73,6 +74,23 @@ export class WasmCore {
   readBytes(ptr: number, len: number): Uint8Array {
     // buffer may have grown since other views were made — re-view each time
     return new Uint8Array(this.exports.memory.buffer, ptr, len).slice();
+  }
+
+  /** Retry without advancing the scheduler cursor when its buffer is too small. */
+  queryScheduled(sched: number, horizon: number): ReturnType<typeof unpackEvents> {
+    let buffer = this.allocBytes(1024);
+    try {
+      let written = this.exports.sched_query(sched, horizon, buffer.ptr, buffer.len);
+      while (written === -2) {
+        if (buffer.len >= 32 * 1024 * 1024) throw new WasmError("pattern is too dense to schedule");
+        const larger = this.allocBytes(buffer.len * 2);
+        this.free(buffer.ptr, buffer.len);
+        buffer = larger;
+        written = this.exports.sched_query(sched, horizon, buffer.ptr, buffer.len);
+      }
+      if (written < 0) throw new WasmError(`sched_query failed (${written})`);
+      return unpackEvents(this.readBytes(buffer.ptr, written));
+    } finally { this.free(buffer.ptr, buffer.len); }
   }
 
   loadSample(dsp: number, name: string, data: Float32Array, rate: number): void {

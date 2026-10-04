@@ -193,6 +193,8 @@ main {
 .tools label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); }
 .tools input, .tools select { color: var(--fg); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 5px; }
 #sample-name { width: 100px; }
+#samples { max-width: 160px; }
+#sample-status { font-size: 12px; color: var(--dim); }
 #export-seconds { width: 60px; }
 #draft-status { font-size: 12px; color: var(--dim); margin-right: auto; }
 .file-button { cursor: pointer; border: 1px solid var(--border); padding: 6px; border-radius: 6px; }

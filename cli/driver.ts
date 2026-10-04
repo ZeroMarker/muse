@@ -6,6 +6,7 @@
 
 import { NCTL, type Pat, unpackEvents } from "../web/src/ir";
 import type { WasmCore } from "../web/src/wasm";
+import type { SampleData } from "../web/src/samples";
 import type { Sink } from "./sink";
 
 const LOOKAHEAD = 0.25;
@@ -36,6 +37,7 @@ export class Driver {
     private readonly core: WasmCore,
     private readonly sink: Sink,
     private readonly log: (line: string) => void,
+    private readonly samples: ReadonlyMap<string, SampleData> = new Map(),
   ) {}
 
   private get x() {
@@ -55,6 +57,7 @@ export class Driver {
       const x = this.x;
       this.sched = x.sched_new(this.cps);
       this.dsp = x.dsp_new(48000);
+      for (const [name, sample] of this.samples) this.core.loadSample(this.dsp, name, sample.data, sample.rate);
       this.ctlPtr = x.muse_alloc(NCTL * 8);
       this.sndPtr = x.muse_alloc(128);
       this.lPtr = x.muse_alloc(CHUNK * 4);
@@ -132,32 +135,15 @@ export class Driver {
     if (!this.playing || !this.sched) return;
     try {
       const horizon = this.x.sched_cycle_at(this.sched, this.now() + LOOKAHEAD);
-      const n = this.x.sched_count(this.sched, horizon);
-      if (n <= 0) return;
-      const cap = Math.ceil(n * 256) + 64;
-      const { ptr, len } = this.core.allocBytes(cap);
-      try {
-        const w = this.x.sched_query(this.sched, horizon, ptr, len);
-        if (w <= 0) return;
-        const evs = unpackEvents(this.core.readBytes(ptr, w));
-        this.scheduledTotal += evs.length;
-        const ctl = new Float64Array(this.x.memory.buffer, this.ctlPtr, NCTL);
-        for (const ev of evs) {
-          ctl.set(ev.ctl);
-          const nlen = Math.min(ev.sound.length, 127);
-          const snd = new Uint8Array(this.x.memory.buffer, this.sndPtr, nlen);
-          for (let i = 0; i < nlen; i++) snd[i] = ev.sound.charCodeAt(i) & 0x7f;
-          this.x.dsp_schedule(
-            this.dsp,
-            this.x.sched_audio_at(this.sched, ev.onsetCycle),
-            ev.durSec,
-            this.ctlPtr,
-            this.sndPtr,
-            nlen,
-          );
-        }
-      } finally {
-        this.core.free(ptr, len);
+      const evs = this.core.queryScheduled(this.sched, horizon);
+      this.scheduledTotal += evs.length;
+      for (const ev of evs) {
+        new Float64Array(this.x.memory.buffer, this.ctlPtr, NCTL).set(ev.ctl);
+        const nlen = Math.min(ev.sound.length, 127);
+        const snd = new Uint8Array(this.x.memory.buffer, this.sndPtr, nlen);
+        for (let i = 0; i < nlen; i++) snd[i] = ev.sound.charCodeAt(i) & 0x7f;
+        this.x.dsp_schedule(this.dsp, this.x.sched_audio_at(this.sched, ev.onsetCycle),
+          ev.durSec, this.ctlPtr, this.sndPtr, nlen);
       }
     } catch (e) {
       this.log(`schedule error: ${String(e)}`);

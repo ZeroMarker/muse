@@ -164,6 +164,54 @@ try {
   const sampleWav = readFileSync(await (await sampleDownload).path());
   check(sampleWav.subarray(44).some((b) => b !== 0), "custom samples included in browser export");
 
+  // Export evaluates editor code once, retaining access to the browser environment.
+  await page.waitForFunction(() => !document.getElementById("export").disabled);
+  await page.locator("#editor .inputarea").focus();
+  await page.keyboard.press("Control+a");
+  await page.keyboard.insertText('globalThis.exportEvaluations = (globalThis.exportEvaluations || 0) + 1;\nif (!document.getElementById("editor")) throw new Error("browser context missing");\nnote(60).sound("sine")');
+  const singleEvaluation = page.waitForEvent("download");
+  await page.click("#export");
+  const onceWav = readFileSync(await (await singleEvaluation).path());
+  check(await page.evaluate(() => globalThis.exportEvaluations === 1) && onceWav.subarray(44).some((b) => b !== 0), "export evaluates code once and sends the resulting pattern to its worker");
+
+  // Maximum-length sample names must work at a density that exceeded the old buffer.
+  const longName = "s".repeat(127);
+  await page.fill("#sample-name", longName);
+  await page.setInputFiles("#sample-file", { name: "long-name.wav", mimeType: "audio/wav", buffer: wav });
+  await page.waitForFunction((name) => document.getElementById("sample-status").textContent === "sample saved: " + name, longName);
+  await page.locator("#editor .inputarea").focus();
+  await page.keyboard.press("Control+a");
+  await page.keyboard.insertText(`sound("${longName}", "x*20").gain(0.3)`);
+  const beforeLong = await page.evaluate(() => window.__muse.engine.scheduledTotal);
+  await page.click("#run");
+  await page.waitForFunction((before) => window.__muse.engine.scheduledTotal > before + 10 && window.__muse.engine.peak > 0.005, beforeLong);
+  check(!(await page.textContent("#console")).includes("sched_query failed"), "127-character sample names schedule and play dense patterns");
+
+  // Simulate processorerror through the real node, then rebuild using Play.
+  check(await page.evaluate(() => {
+    const engine = window.__muse.engine;
+    engine.node.dispatchEvent(new Event("processorerror"));
+    return !engine.audioReady && !engine.playing && engine.ctx === null;
+  }), "processor failure clears audio and transport readiness");
+  await page.click("#play");
+  await page.waitForFunction(() => window.__muse.engine.audioReady && window.__muse.engine.playing && window.__muse.engine.workletDiag && window.__muse.engine.peak > 0.005);
+  check(true, "Play rebuilds the failed audio engine with its pattern and samples");
+  await page.click("#stop");
+
+  await page.reload({ waitUntil: "load" });
+  await page.waitForFunction((name) => window.__muse.engine.samples.has(name) && window.__muse.engine.samples.has("my_sample"), longName);
+  check(await page.evaluate(() => !window.__muse.engine.audioReady), "samples restore from local storage without starting audio");
+  await page.click("#run");
+  await page.waitForFunction(() => window.__muse.engine.peak > 0.005);
+  check(true, "restored samples play after reload");
+  await page.click("#stop");
+  await page.selectOption("#samples", longName);
+  await page.click("#delete-sample");
+  await page.waitForFunction((name) => !window.__muse.engine.samples.has(name), longName);
+  await page.reload({ waitUntil: "load" });
+  await page.waitForFunction(() => document.getElementById("sample-status").textContent.includes("restored"));
+  check(await page.evaluate((name) => !window.__muse.engine.samples.has(name) && window.__muse.engine.samples.has("my_sample"), longName), "sample deletion persists and preserves other samples");
+
   // All browser codec exports: decode real downloads instead of trusting filenames.
   const codecDirectory = mkdtempSync(join(tmpdir(), "muse-browser-codecs-"));
   try {
@@ -220,6 +268,28 @@ try {
     await failurePage.click("#export");
     check((await recovery).suggestedFilename() === "muse.wav", "WAV works after encoder loading fails");
   } finally { await failurePage.close(); }
+
+  // When local storage is unavailable, samples still work for the session.
+  const storagePage = await browser.newPage();
+  try {
+    await storagePage.addInitScript(() => {
+      Object.defineProperty(globalThis, "indexedDB", { value: { open() { throw new Error("storage unavailable"); } } });
+    });
+    await storagePage.goto("http://127.0.0.1:" + PORT + "/", { waitUntil: "load" });
+    await storagePage.waitForFunction(() => document.getElementById("sample-status").textContent.includes("could not be restored"));
+    await storagePage.setInputFiles("#sample-file", { name: "session.wav", mimeType: "audio/wav", buffer: wav });
+    await storagePage.waitForFunction(() => document.getElementById("sample-status").textContent.includes("could not save"));
+    check(await storagePage.evaluate(() => window.__muse.engine.samples.has("my_sample")), "samples remain available when saving fails");
+    await storagePage.locator("#editor .inputarea").focus();
+    await storagePage.keyboard.press("Control+a");
+    await storagePage.keyboard.insertText('sound("my_sample", "x*4")');
+    await storagePage.click("#run");
+    await storagePage.waitForFunction(() => window.__muse.engine.peak > 0.005);
+    await storagePage.click("#delete-sample");
+    await storagePage.waitForFunction(() => !window.__muse.engine.samples.has("my_sample"));
+    check(await storagePage.locator("#delete-sample").isDisabled(), "session samples can be removed when persistent storage is unavailable");
+    await storagePage.click("#stop");
+  } finally { await storagePage.close(); }
 
   check(consoleErrors.length === 0, `no browser console errors${consoleErrors.length ? `: ${consoleErrors[0]}` : ""}`);
 } catch (e) {

@@ -1,5 +1,6 @@
 import "./styles.css";
 
+import { readSamples, saveSample, deleteSample } from "./sample-store";
 import { engine } from "./audio/engine";
 import { evaluate } from "./repl";
 import { EXAMPLES, DEFAULT_EXAMPLE } from "./examples";
@@ -133,25 +134,75 @@ restoreButton.addEventListener("click", () => {
     editor.setValue(backup);
   }
 });
+const sampleSelect = $<HTMLSelectElement>("samples");
+const deleteSampleButton = $<HTMLButtonElement>("delete-sample");
+let sampleBusy = false;
+function updateSamples(): void {
+  const selected = sampleSelect.value;
+  sampleSelect.replaceChildren();
+  for (const name of engine.samples.keys()) sampleSelect.add(new Option(name, name));
+  if (!engine.samples.size) sampleSelect.add(new Option("none", ""));
+  if (engine.samples.has(selected)) sampleSelect.value = selected;
+  sampleSelect.disabled = sampleBusy;
+  deleteSampleButton.disabled = sampleBusy || !sampleSelect.value;
+  $<HTMLInputElement>("sample-file").disabled = sampleBusy;
+}
+const samplesReady = readSamples().then((samples) => {
+  for (const { name, ...sample } of samples) engine.registerSample(name, sample);
+  $("sample-status").textContent = `${samples.length} saved samples restored`;
+}).catch(() => {
+  $("sample-status").textContent = "saved samples could not be restored";
+}).finally(updateSamples);
+sampleSelect.addEventListener("change", () => {
+  $<HTMLInputElement>("sample-name").value = sampleSelect.value;
+  updateSamples();
+});
+deleteSampleButton.addEventListener("click", async () => {
+  const name = sampleSelect.value;
+  if (!name || sampleBusy) return;
+  sampleBusy = true; updateSamples();
+  try {
+    await deleteSample(name);
+    engine.removeSample(name);
+    $("sample-status").textContent = `sample deleted: ${name}`;
+  } catch {
+    engine.removeSample(name);
+    $("sample-status").textContent = `sample removed for this session: ${name}`;
+    log("saved sample could not be deleted; it may return after reload", "error");
+  }
+  finally { sampleBusy = false; updateSamples(); }
+});
 $<HTMLInputElement>("sample-file").addEventListener("change", async (event) => {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
-  if (!file) return;
+  if (!file || sampleBusy) return;
+  sampleBusy = true; updateSamples();
   try {
+    await samplesReady;
     if (file.size > 50 * 1024 * 1024) throw new Error("audio file must be smaller than 50 MiB");
     const name = $<HTMLInputElement>("sample-name").value.trim();
     await engine.loadSample(name, await file.arrayBuffer());
+    updateSamples(); sampleSelect.value = name;
+    try {
+      await saveSample(name, engine.samples.get(name)!);
+      $("sample-status").textContent = `sample saved: ${name}`;
+    } catch {
+      $("sample-status").textContent = "sample loaded for this session; could not save";
+      log("sample could not be saved; it will need to be loaded again after reload", "error");
+    }
     log(`sample loaded: sound("${name}", "x*4") · speed(2, …) doubles pitch`, "ok");
     setStatus(engine.audioReady);
   } catch (error) { log(String(error), "error"); }
-  finally { input.value = ""; }
+  finally { input.value = ""; sampleBusy = false; updateSamples(); }
 });
 const exportFormat = $<HTMLSelectElement>("export-format");
 const updateExportLabel = () => {
   $("export").textContent = "download " + EXPORT_FORMATS[parseExportFormat(exportFormat.value)].label;
 };
 exportFormat.addEventListener("change", updateExportLabel);
-$<HTMLButtonElement>("export").addEventListener("click", () => {
+$<HTMLButtonElement>("export").addEventListener("click", async () => {
+  await samplesReady;
+  if ($<HTMLButtonElement>("export").disabled) return;
   const result = evaluate(editor.getValue());
   if (!result.ok) { showEditorError(editor, result); log(result.error, "error"); return; }
   const seconds = Number($<HTMLInputElement>("export-seconds").value);
@@ -176,7 +227,7 @@ $<HTMLButtonElement>("export").addEventListener("click", () => {
     }
     finish();
   };
-  worker.postMessage({ code: editor.getValue(), seconds, cps: engine.cps,
+  worker.postMessage({ pat: result.pattern.pat, seconds, cps: engine.cps,
     format, baseURL: document.baseURI, wasmUrl: new URL("muse_core.wasm", document.baseURI).href, samples: [...engine.samples] });
 });
 
@@ -199,6 +250,7 @@ async function run(): Promise<void> {
   running = true;
   const version = ++transportVersion;
   try {
+    await samplesReady;
     await engine.initIfNeeded();
     if (version !== transportVersion) return;
     engine.setPattern(res.pattern.pat);
@@ -221,6 +273,7 @@ async function play(): Promise<void> {
       await run();
       return;
     }
+    await samplesReady;
     await engine.play();
     log("▶ playing", "ok");
   } catch (e) {

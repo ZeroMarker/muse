@@ -15,6 +15,9 @@ import { renderMidi } from "../web/src/midi";
 import { EXPORT_FORMATS } from "../web/src/export-formats";
 import { SAMPLE_RATE, encodeWav, renderOffline, rms } from "./wav";
 
+import { loadSamples } from "./samples";
+import { parseArgs, type Flags } from "./args";
+
 const VERSION = "0.1.0";
 const PROMPT = "muse ❯ ";
 
@@ -28,6 +31,7 @@ const USAGE = `muse ${VERSION} — live music DSL for the terminal
     --seconds <n>     length to render        (default 8)
     -o, --out <path>  output file             (default <file>.<format>)
     --format <name>   wav mp3 flac ogg aac m4a mid (default: extension or wav)
+    --sample <name=path>  load audio sample (repeatable; requires FFmpeg)
     --bpm <n>         tempo                   (default 120)
     --no-play         don't play the result
     --play            play even when piped
@@ -39,48 +43,6 @@ REPL commands:
 Everything else is evaluated as code; the last expression is the pattern:
   stack("bd . hh .", "sn . . sn").delay(0.3)
 `;
-
-interface Flags {
-  cmd: "help" | "version" | "repl" | "run";
-  _: string[];
-  seconds: number;
-  out: string | null;
-  format: string | null;
-  bpm: number;
-  play: boolean | null;
-  audio: boolean;
-}
-
-function parseArgs(argv: string[]): Flags {
-  const f: Flags = {
-    cmd: "repl",
-    _: [],
-    seconds: 8,
-    out: null,
-    format: null,
-    bpm: 120,
-    play: null,
-    audio: true,
-  };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "-h" || a === "--help") f.cmd = "help";
-    else if (a === "-v" || a === "--version") f.cmd = "version";
-    else if (a === "run") f.cmd = "run";
-    else if (a === "repl") f.cmd = "repl";
-    else if (a === "--seconds") f.seconds = Number(argv[++i]) || 8;
-    else if (a === "-o" || a === "--out") f.out = argv[++i];
-    else if (a === "--format") {
-      if (!argv[i + 1]) throw new Error("--format needs a value");
-      f.format = argv[++i];
-    } else if (a === "--bpm") f.bpm = Number(argv[++i]) || 120;
-    else if (a === "--no-play") f.play = false;
-    else if (a === "--play") f.play = true;
-    else if (a === "--no-audio") f.audio = false;
-    else f._.push(a);
-  }
-  return f;
-}
 
 async function runCommand(f: Flags): Promise<number> {
   const file = f._[0];
@@ -104,14 +66,15 @@ async function runCommand(f: Flags): Promise<number> {
 
   const format = outputFormat(f.format, f.out);
   const out = f.out ?? basename(file).replace(/\.[^.]*$/, "") + "." + EXPORT_FORMATS[format].extension;
+  const samples = loadSamples(f.samples);
   const core = await loadCore();
   const cps = f.bpm / 60;
   if (format === "mid") {
-    writeFileSync(out, renderMidi(core, res.pattern.pat, f.seconds, cps));
+    writeFileSync(out, renderMidi(core, res.pattern.pat, f.seconds, cps, new Set(samples.keys())));
     console.log("✓ " + out + " — MIDI notes, " + f.seconds + "s @ " + f.bpm + " bpm (audio effects and samples are not embedded)");
     return 0;
   }
-  const pcm = renderOffline(core, res.pattern.pat, f.seconds, cps);
+  const pcm = renderOffline(core, res.pattern.pat, f.seconds, cps, SAMPLE_RATE, samples);
   const wav = encodeWav(pcm, SAMPLE_RATE, 2);
   const encoded = encodeAudio(wav, format);
   writeFileSync(out, encoded);
@@ -142,6 +105,7 @@ async function runCommand(f: Flags): Promise<number> {
 }
 
 async function replCommand(f: Flags): Promise<number> {
+  const samples = loadSamples(f.samples);
   const core = await loadCore();
   const out = process.stdout;
   const isTty = Boolean(out.isTTY && process.stdin.isTTY);
@@ -162,7 +126,7 @@ async function replCommand(f: Flags): Promise<number> {
   const warn = (m: string): void => log(`! ${m}`);
 
   const sink = createSink(f.audio && isTty, warn);
-  const driver = new Driver(core, sink, log);
+  const driver = new Driver(core, sink, log, samples);
   driver.setCps(f.bpm / 60);
 
   viz = new TerminalViz(
@@ -217,12 +181,12 @@ async function replCommand(f: Flags): Promise<number> {
           return;
         case "bpm": {
           if (arg) {
-            const bpm = Math.min(300, Math.max(20, Number(arg) || 0));
-            if (bpm) {
+            const bpm = Number(arg);
+            if (Number.isFinite(bpm) && bpm >= 20 && bpm <= 300) {
               driver.setCps(bpm / 60);
               log(`→ ${bpm} bpm`);
             } else {
-              log("! :bpm needs a number");
+              log("! :bpm needs a number between 20 and 300");
             }
           } else {
             log(`→ ${Math.round(driver.cps * 60)} bpm`);

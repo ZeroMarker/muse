@@ -93,6 +93,15 @@ class MuseProcessor extends AudioWorkletProcessor {
         }
         break;
       }
+      case "remove_sample": {
+        const np = this.x.muse_alloc(m.name.length);
+        try {
+          const name = new Uint8Array(this.x.memory.buffer, np, m.name.length);
+          for (let i = 0; i < name.length; i++) name[i] = m.name.charCodeAt(i);
+          this.x.dsp_remove_sample(this.h, np, name.length);
+        } finally { this.x.muse_free(np, m.name.length); }
+        break;
+      }
       case "ev": {
         this.noteCount += m.evs.length;
         for (const ev of m.evs) {

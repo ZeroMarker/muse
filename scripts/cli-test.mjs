@@ -3,7 +3,7 @@
 //   node scripts/cli-test.mjs   (build first: bash scripts/build-cli.sh)
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync, mkdtempSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, truncateSync, rmSync, mkdtempSync } from "node:fs";
 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -94,6 +94,58 @@ const WAV = "/tmp/muse-cli-test.wav";
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }
 
+// Invalid inputs must fail before creating output, rather than using defaults.
+{
+  const directory = mkdtempSync(join(tmpdir(), "muse-input-test-"));
+  try {
+    const output = join(directory, "invalid.wav");
+    for (const args of [["--seconds", "invalid"], ["--seconds", "0"], ["--seconds", "301"],
+      ["--bpm", "invalid"], ["--bpm", "0"], ["--seconds"], ["--bpm"], ["--out"], ["--secnds", "1"]]) {
+      const result = spawnSync("node", [CLI, "run", "examples/demo.js", "--no-play", "-o", output, ...args], { encoding: "utf8" });
+      check(result.status !== 0 && !existsSync(output), "invalid CLI input rejected: " + args.join(" "));
+    }
+    const program = join(directory, "sample.js");
+    writeFileSync(program, 'sound("bd", "x").gain(0.5)');
+    // Silence overriding a builtin proves that audio is decoded and loaded, not ignored.
+    const silentWav = Buffer.from(readFileSync(WAV));
+    silentWav.fill(0, 44);
+    const silentPath = join(directory, "silence.wav");
+    writeFileSync(silentPath, silentWav);
+    const sampleOutput = join(directory, "sample.wav");
+    const sampled = spawnSync("node", [CLI, "run", program, "--sample", "bd=" + silentPath,
+      "--seconds", "0.5", "--no-play", "-o", sampleOutput], { encoding: "utf8" });
+    check(sampled.status === 0 && existsSync(sampleOutput) && !readFileSync(sampleOutput).subarray(44).some((b) => b !== 0), "CLI loads sample audio and overrides builtin instruments");
+    const audibleOutput = join(directory, "audible.wav");
+    const audible = spawnSync("node", [CLI, "run", program, "--sample", "bd=" + WAV,
+      "--seconds", "0.5", "--no-play", "-o", audibleOutput], { encoding: "utf8" });
+    check(audible.status === 0 && existsSync(audibleOutput) && readFileSync(audibleOutput).subarray(44).some((b) => b !== 0), "CLI sample rendering produces audio");
+    const sampleMidi = join(directory, "sample.mid");
+    const midi = spawnSync("node", [CLI, "run", program, "--sample", "bd=" + WAV, "--seconds", "0.5", "--no-play", "-o", sampleMidi], { encoding: "utf8" });
+    check(midi.status === 0 && existsSync(sampleMidi) && parseMidi(readFileSync(sampleMidi)).tracks.some((track) => track.some((event) => event.type === "noteOn" && event.channel !== 9)), "CLI MIDI maps overridden drums to sample notes");
+    const longPath = join(directory, "too-long.wav");
+    const longWav = Buffer.alloc(44 + 31 * 48000 * 4);
+    silentWav.copy(longWav, 0, 0, 44);
+    longWav.writeUInt32LE(longWav.length - 8, 4);
+    longWav.writeUInt32LE(longWav.length - 44, 40);
+    writeFileSync(longPath, longWav);
+    const overlong = spawnSync("node", [CLI, "run", program, "--sample", "bd=" + longPath, "--no-play", "-o", output], { encoding: "utf8" });
+    check(overlong.status !== 0 && overlong.stderr.includes("at most 30 seconds") && !existsSync(output), "CLI rejects samples longer than 30 seconds");
+    const largePath = join(directory, "too-large.wav");
+    writeFileSync(largePath, silentWav.subarray(0, 44));
+    truncateSync(largePath, 51 * 1024 * 1024);
+    const oversized = spawnSync("node", [CLI, "run", program, "--sample", "bd=" + largePath, "--no-play", "-o", output], { encoding: "utf8" });
+    check(oversized.status !== 0 && oversized.stderr.includes("50 MiB") && !existsSync(output), "CLI rejects sample files larger than 50 MiB");
+    const missing = spawnSync(process.execPath, [CLI, "run", program, "--sample", "bd=" + WAV, "--no-play", "-o", output], { encoding: "utf8", env: { ...process.env, PATH: "/nonexistent" } });
+    check(missing.status !== 0 && missing.stderr.includes("FFmpeg is required") && !existsSync(output), "CLI sample decoder reports missing FFmpeg");
+    const repl = spawnSync("node", [CLI, "repl", "--no-audio", "--sample", "bd=" + WAV], { encoding: "utf8", input: 'sound("bd", "x*4")\n:quit\n', timeout: 20000 });
+    check(repl.status === 0 && repl.stdout.includes("pattern installed"), "REPL accepts sample files");
+    for (const sample of ["bad-name=" + WAV, "missing=" + join(directory, "missing.wav"), "bd", "bd="]) {
+      const invalid = spawnSync("node", [CLI, "run", program, "--sample", sample, "--no-play", "-o", output], { encoding: "utf8" });
+      check(invalid.status !== 0 && !existsSync(output), "invalid sample rejected: " + sample);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}
+
 // 4. syntax error → non-zero exit
 {
   const r = spawnSync("node", [CLI, "run", "/dev/null", "--no-play"], { encoding: "utf8" });
@@ -104,6 +156,8 @@ const WAV = "/tmp/muse-cli-test.wav";
 {
   const input = [
     ":bpm 140",
+    ":bpm invalid",
+    ":bpm 0",
     'stack("bd . sn .", gain(0.6, "hh/2"))',
     'note("c3 e3 g3 b3").delay(0.3)',
     "this is not valid js)))",
@@ -122,6 +176,7 @@ const WAV = "/tmp/muse-cli-test.wav";
   check(r.stdout.includes("✗"), "repl reported the syntax error");
   check(r.stdout.includes("bye"), "repl said goodbye");
   check(r.stdout.includes("140 bpm"), "bpm command applied");
+  check(r.stdout.includes("needs a number between 20 and 300") && !r.stdout.includes("→ 20 bpm"), "invalid REPL tempo preserves the current tempo");
   check(!r.stdout.includes("undefined NaN"), "no NaN leaks in output");
 }
 
