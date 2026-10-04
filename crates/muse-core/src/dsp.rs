@@ -194,7 +194,9 @@ impl Voice {
 
         // --- resonant filter (TPT/ZDF state variable) ---
         if self.filter != 3 {
-            let hp = v - self.k * self.ic1 - self.ic2;
+            // Solve the feedback loop before updating the integrator states.
+            let hp = (v - (self.k + self.g) * self.ic1 - self.ic2)
+                / (1.0 + self.g * (self.g + self.k));
             let bp = self.g * hp + self.ic1;
             let lp = self.g * bp + self.ic2;
             self.ic1 = self.g * hp + bp;
@@ -299,7 +301,8 @@ impl Dsp {
 
     fn spawn(&mut self, p: &Pending) {
         let c = p.ctl;
-        let wave = p.wave;
+        // A registered sample replaces all instrument-specific processing.
+        let wave = if p.sample.is_some() { Wave::Saw } else { p.wave };
         let is_drum = p.sample.is_none() && matches!(wave, Wave::Bd | Wave::Sn | Wave::Hh | Wave::Oh | Wave::Cp | Wave::Tom);
 
         let freq = midi_to_freq(clamp_def(c[CTL_NOTE], -20.0, 140.0, 60.0))
@@ -530,6 +533,62 @@ mod tests {
 
     fn default_ctl() -> [f64; NCTL] {
         DEFAULTS
+    }
+
+    #[test]
+    fn sustained_notes_remain_stable_at_high_cutoffs() {
+        for sr in [44100.0, 48000.0] {
+            for cutoff in [12000.0, 18000.0, sr * 0.45] {
+                for resonance in [0.1, 0.99] {
+                    let mut d = Dsp::new(sr);
+                    let mut ctl = default_ctl();
+                    ctl[CTL_CUTOFF] = cutoff;
+                    ctl[CTL_RESONANCE] = resonance;
+                    d.schedule(0.0, 2.0, &ctl, "sine");
+                    let mut l = vec![0.0; 128];
+                    let mut r = vec![0.0; 128];
+                    let mut energy = 0.0;
+                    let mut count = 0;
+                    for frame in (0..sr as usize).step_by(128) {
+                        d.process(&mut l, &mut r, frame as i64);
+                        assert!(d.voices.iter().all(|v| v.ic1.is_finite() && v.ic2.is_finite()),
+                            "filter diverged: sr={sr}, cutoff={cutoff}, resonance={resonance}");
+                        if frame as f64 >= sr * 0.5 {
+                            for &sample in &l {
+                                energy += (sample as f64).powi(2);
+                                count += 1;
+                            }
+                        }
+                    }
+                    let rms = (energy / count as f64).sqrt();
+                    assert!((0.05..0.25).contains(&rms),
+                        "sustained sine distorted or silent: rms={rms}, sr={sr}, cutoff={cutoff}, resonance={resonance}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sample_audio_is_independent_of_overridden_instrument_name() {
+        let data: Vec<f32> = (0..8192).map(|i|
+            (0.5 * (std::f64::consts::TAU * 220.0 * i as f64 / 48000.0).sin()) as f32
+        ).collect();
+        let render = |name: &str| {
+            let mut d = Dsp::new(48000.0);
+            assert!(d.load_sample(name, &data, 48000.0));
+            let mut ctl = default_ctl();
+            ctl[CTL_CUTOFF] = 1000.0;
+            d.schedule(0.0, 0.1, &ctl, name);
+            let mut l = vec![0.0; data.len()];
+            let mut r = vec![0.0; data.len()];
+            d.process(&mut l, &mut r, 0);
+            (l, r)
+        };
+        let expected = render("sample");
+        assert!(expected.0.iter().any(|v| v.abs() > 0.01));
+        for name in ["bd", "kick", "sn", "snare", "hh", "hat", "hhc", "oh", "cp", "clap", "tom", "sine"] {
+            assert!(render(name) == expected, "sample changed when named {name}");
+        }
     }
 
     #[test]

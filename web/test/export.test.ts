@@ -49,6 +49,16 @@ describe("export formats", () => {
     const namedDrums = parseMidi(renderMidi(core, p("drums").pat, 1, 1));
     expect(namedDrums.tracks[1].some((e) => e.type === "noteOn" && e.noteNumber === 60)).toBe(true);
   });
+  it("treats prototype property names as unknown melodic instruments", async () => {
+    const core = await loadCore();
+    for (const name of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+      const data = parseMidi(renderMidi(core, note(64).sound(name).pat, 1, 1));
+      expect(data.tracks[1].filter((e) => e.type === "noteOn")).toEqual([
+        { deltaTime: 0, type: "noteOn", channel: 0, noteNumber: 64, velocity: 127 },
+      ]);
+      expect(data.tracks[1].some((e) => e.type === "programChange" && e.programNumber === 0)).toBe(true);
+    }
+  });
   it("coalesces chorus unisons, applies speed to pitch and handles short repeated notes", async () => {
     const core = await loadCore();
     const data = parseMidi(renderMidi(core, note(60).chorus(0.01).pat, 1, 1));

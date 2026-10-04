@@ -3,8 +3,8 @@ import { CTL, type Pat, type SchedEvent, unpackEvents } from "./ir";
 import type { WasmCore } from "./wasm";
 
 const PPQ = 480;
-const DRUMS: Record<string, number> = { bd: 36, kick: 36, sn: 38, snare: 38, hh: 42, hat: 42, hhc: 42, oh: 46, cp: 39, clap: 39, tom: 45 };
-const PROGRAMS: Record<string, number> = { sine: 80, sin: 80, saw: 81, sawtooth: 81, square: 80, sq: 80, pulse: 80, tri: 80, triangle: 80, organ: 16, noise: 122, nz: 122 };
+const DRUMS = new Map<string, number>(Object.entries({ bd: 36, kick: 36, sn: 38, snare: 38, hh: 42, hat: 42, hhc: 42, oh: 46, cp: 39, clap: 39, tom: 45 }));
+const PROGRAMS = new Map<string, number>(Object.entries({ sine: 80, sin: 80, saw: 81, sawtooth: 81, square: 80, sq: 80, pulse: 80, tri: 80, triangle: 80, organ: 16, noise: 122, nz: 122 }));
 type TimedEvent = { tick: number; order: number; event: MidiEvent };
 type Note = { start: number; end: number; pitch: number; velocity: number };
 
@@ -38,7 +38,7 @@ export function renderMidi(core: WasmCore, pat: Pat, seconds: number, cps: numbe
       for (const ev of unpackEvents(core.readBytes(buffer.ptr, written))) {
         if (++total > 100000) throw new Error("MIDI export supports at most 100,000 notes");
         if (ev.ctl[CTL.gain] <= 0) continue;
-        const key = !sampleNames.has(ev.sound) && DRUMS[ev.sound] !== undefined ? "drums" : "sound:" + ev.sound;
+        const key = !sampleNames.has(ev.sound) && DRUMS.has(ev.sound) ? "drums" : "sound:" + ev.sound;
         const group = groups.get(key) ?? [];
         group.push(ev);
         groups.set(key, group);
@@ -59,10 +59,10 @@ export function renderMidi(core: WasmCore, pat: Pat, seconds: number, cps: numbe
     if (!drum && melodicChannel > 15) throw new Error("MIDI supports at most 15 melodic instruments");
     const channel = drum ? 9 : melodicChannel++;
     const timed: TimedEvent[] = [{ tick: 0, order: 0, event: { deltaTime: 0, type: "trackName", text: name } }];
-    if (!drum) timed.push({ tick: 0, order: 0, event: { deltaTime: 0, type: "programChange", channel, programNumber: sampleNames.has(name) ? 0 : PROGRAMS[name] ?? 0 } });
+    if (!drum) timed.push({ tick: 0, order: 0, event: { deltaTime: 0, type: "programChange", channel, programNumber: sampleNames.has(name) ? 0 : PROGRAMS.get(name) ?? 0 } });
     const notes = evs.map((ev): Note => {
       const start = Math.round(ev.onsetCycle * PPQ);
-      const pitch = drum ? DRUMS[ev.sound] : Math.round(ev.ctl[CTL.note] + 12 * Math.log2(Math.max(0.01, Math.min(16, ev.ctl[CTL.speed]))));
+      const pitch = drum ? DRUMS.get(ev.sound)! : Math.round(ev.ctl[CTL.note] + 12 * Math.log2(Math.max(0.01, Math.min(16, ev.ctl[CTL.speed]))));
       return { start, end: Math.min(endTick, Math.max(start + 1, Math.round((ev.onsetCycle + ev.durSec * cps) * PPQ))),
         pitch: Math.max(0, Math.min(127, pitch)), velocity: Math.max(1, Math.min(127, Math.round(ev.ctl[CTL.gain] * 127))) };
     }).filter((note) => note.start < endTick).sort((a, b) => a.pitch - b.pitch || a.start - b.start);

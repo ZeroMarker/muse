@@ -173,11 +173,19 @@ try {
   await page.click("#export");
   const onceWav = readFileSync(await (await singleEvaluation).path());
   check(await page.evaluate(() => globalThis.exportEvaluations === 1) && onceWav.subarray(44).some((b) => b !== 0), "export evaluates code once and sends the resulting pattern to its worker");
+  let sustainedEnergy = 0;
+  const tailFrames = 4800;
+  for (let offset = onceWav.length - tailFrames * 4; offset < onceWav.length; offset += 4) {
+    sustainedEnergy += (onceWav.readInt16LE(offset) / 32768) ** 2;
+  }
+  const sustainedRms = Math.sqrt(sustainedEnergy / tailFrames);
+  check(sustainedRms > 0.05 && sustainedRms < 0.25, "default-cutoff sine sustains through browser export");
 
   // Maximum-length sample names must work at a density that exceeded the old buffer.
+  // Fast repeats need a fast-attack source, rather than the quiet ambient intro.
   const longName = "s".repeat(127);
   await page.fill("#sample-name", longName);
-  await page.setInputFiles("#sample-file", { name: "long-name.wav", mimeType: "audio/wav", buffer: wav });
+  await page.setInputFiles("#sample-file", { name: "long-name.wav", mimeType: "audio/wav", buffer: onceWav });
   await page.waitForFunction((name) => document.getElementById("sample-status").textContent === "sample saved: " + name, longName);
   await page.locator("#editor .inputarea").focus();
   await page.keyboard.press("Control+a");
