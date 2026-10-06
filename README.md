@@ -46,10 +46,21 @@ npm run preview      # Vite prints the preview URL
 
 The default example is a looping arrangement of Pachelbel’s **Canon in D**,
 with the eight-note ground bass, chord accompaniment, and three imitative
-melody voices. The initial tempo is 90 bpm. Select **Canon in D** from the
-example menu to load it over a saved draft. The unedited previous default
+melody voices. The initial tempo is 90 cycles per minute. Select **Canon in D**
+from the example menu to load it over a saved draft. The unedited previous default
 is migrated automatically; edited drafts are preserved. The source is
 [examples/canon.js](examples/canon.js).
+
+Browser code runs once per Run or export in a disposable worker, with a
+2-second evaluation timeout. Stop cancels a pending Run; **cancel export**
+cancels evaluation, rendering, or encoding. Editor code has no DOM access,
+and globals do not persist between evaluations. Syntax/runtime error locations
+still refer to the original editor source. The CLI evaluates trusted JavaScript
+in its Node process.
+
+The toolbar labels tempo as **cycles/min**: one cycle is one complete pattern
+loop. CLI `--bpm` and the numeric defaults keep this same cycles-per-minute
+meaning.
 
 The editor saves your current code locally after each change and restores it on
 reload. Selecting an example backs up the current draft; **restore previous
@@ -60,9 +71,10 @@ with its installed pattern and loaded samples. Syntax and runtime errors show a 
 marker; errors with a source location reveal the corresponding line.
 
 Choose **seconds** (1–300), select **format**, and click **download …** to
-export the current editor code at the selected BPM. Each export evaluates the
-code once in the browser and renders that resulting pattern in a worker. Audio export uses a separate
-worker and the same deterministic Rust DSP as the CLI. All audio formats are
+export the current editor code at the selected cycle speed. Rendering shows
+percentage progress; **cancel export** restores the controls immediately. Each
+export evaluates code once in a worker and renders the resulting pattern in a
+separate worker and the same deterministic Rust DSP as the CLI. All audio formats are
 stereo at 48 kHz; the source render is 16-bit PCM. Export starts at cycle zero
 and cuts release/delay tails at the selected length. Compressed formats can
 contain small encoder padding.
@@ -108,7 +120,8 @@ The sample status shows whether saving succeeded; if storage is unavailable
 or full, the sample stays usable for the current session. Select a sample under
 **loaded samples** and click **delete sample** to remove it from storage and
 stop its active/queued notes. Other samples remain available. Clearing site
-data also removes saved samples. Samples stay on this browser and are not
+data also removes saved samples. A session supports at most 128 MiB of source
+sample PCM, including CLI samples. Samples stay on this browser and are not
 uploaded or synchronized.
 Sample names start with a letter and contain only ASCII letters, numbers, or
 underscores (at most 127 characters). Choose a unique name: sample names
@@ -154,7 +167,8 @@ stack("bd ~ sn ~", gain(0.3, "hh*8"))
 
 Add melody with `note("c3 e3 g3 b3").sound("organ")`, combine with `stack`,
 and use `.slow(2)` for half speed. One cycle is one pass of the pattern; the BPM
-control represents cycles per minute. Press Ctrl+. to stop. Try the toolbar's
+control is labelled cycles/min and represents cycles per minute. Press Ctrl+.
+to stop. Try the toolbar's
 drums, ambient, and pulse bass examples or render the files in `examples/`.
 
 ## CLI
@@ -290,6 +304,16 @@ memory — events cross the port as plain objects `{t, d, c, s}`.
   every control defensively (`f64::min(NaN, x) == x` once turned silence into a
   DC offset of 1.0).
 
+Patterns are limited to 64 nesting levels and 16,384 IR nodes. Each Rust
+query limits intermediate work to 100,000 steps and 16,384 generated events;
+exceeding either returns an error without advancing the scheduler cursor.
+Playback stops on a scheduling error. Audio rendering uses the same bounded
+query path and supports up to 1,000,000 events per export (MIDI: 100,000).
+Instrument names must be ASCII and at most 127 characters.
+The DSP supports 128 voices and 4096 queued notes; live playback reports dropped
+notes or stolen voices, and offline audio export fails rather than silently
+omitting them. Reduce density or envelope duration when this happens.
+
 ## DSL reference
 
 Mini-notation (strings):
@@ -335,6 +359,13 @@ const drums = stack(
 const bass = note("c2 . . c2 . g1 . .").gain(0.75).cutoff(500);
 stack(drums, bass).delay(0.3)
 ```
+
+Chained `.note("c3 e3")` samples pitches at the existing pattern's event
+onsets, preserving its rhythm, instrument, and controls. Pitch-pattern rests
+mute matching events; chords produce simultaneous pitches. For example,
+`sound("organ", "x*4").gain(0.3).note("c3 e3")` plays four organ notes,
+with pitches C3, C3, E3, E3. Free `note("c3 e3")` still creates a melody;
+`note(string, pattern)` remains ambiguous and is rejected.
 
 **ctrl+enter** = run (hot-swaps the pattern while playing),
 **ctrl+.** = stop.

@@ -63,15 +63,14 @@ describe("cli offline render (muse run)", () => {
   it("keeps rendering after more than 4096 events", async () => {
     const core = await loadCore();
     const sampleRate = 8000;
-    const pcm = renderOffline(core, fast(1000, "bd").pat, 3, 2, sampleRate);
+    const pcm = renderOffline(core, fast(1000, "bd").decay(0.005).release(0.001).pat, 3, 2, sampleRate);
     expect(rms(pcm.subarray(2.5 * sampleRate * 2))).toBeGreaterThan(0.01);
   });
 
-  it("renders event data larger than the former 1 MiB buffer", async () => {
+  it("rejects instrument names that would be truncated by the DSP", async () => {
     const core = await loadCore();
     const pat = sound("x".repeat(3000), fast(200, "bd")).pat;
-    const pcm = renderOffline(core, pat, 2, 2, 8000);
-    expect(rms(pcm)).toBeGreaterThan(0.01);
+    expect(() => renderOffline(core, pat, 2, 2, 8000)).toThrow(/instrument names/);
   });
 
   it("skips paused wall-clock frames when restarting the CLI driver", async () => {

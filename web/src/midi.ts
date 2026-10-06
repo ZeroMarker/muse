@@ -1,5 +1,5 @@
 import { writeMidi, type MidiEvent } from "midi-file";
-import { CTL, type Pat, type SchedEvent, unpackEvents } from "./ir";
+import { CTL, type Pat, type SchedEvent } from "./ir";
 import type { WasmCore } from "./wasm";
 
 const PPQ = 480;
@@ -16,7 +16,6 @@ export function renderMidi(core: WasmCore, pat: Pat, seconds: number, cps: numbe
   const groups = new Map<string, SchedEvent[]>();
   const x = core.exports;
   const sched = x.sched_new(cps);
-  let buffer = core.allocBytes(65536);
   try {
     const handle = core.decodePattern(pat);
     try { if (!x.sched_set_pattern(sched, handle)) throw new Error("pattern rejected"); }
@@ -26,16 +25,7 @@ export function renderMidi(core: WasmCore, pat: Pat, seconds: number, cps: numbe
     const endCycle = seconds * cps;
     for (let cursor = 0; cursor < endCycle; cursor += 1) {
       const horizon = Math.min(cursor + 1, endCycle);
-      let written = x.sched_query(sched, horizon, buffer.ptr, buffer.len);
-      while (written === -2) {
-        if (buffer.len >= 32 * 1024 * 1024) throw new Error("MIDI pattern is too dense");
-        const larger = core.allocBytes(buffer.len * 2);
-        core.free(buffer.ptr, buffer.len);
-        buffer = larger;
-        written = x.sched_query(sched, horizon, buffer.ptr, buffer.len);
-      }
-      if (written < 0) throw new Error("MIDI scheduling failed");
-      for (const ev of unpackEvents(core.readBytes(buffer.ptr, written))) {
+      for (const ev of core.queryScheduled(sched, horizon)) {
         if (++total > 100000) throw new Error("MIDI export supports at most 100,000 notes");
         if (ev.ctl[CTL.gain] <= 0) continue;
         const key = !sampleNames.has(ev.sound) && DRUMS.has(ev.sound) ? "drums" : "sound:" + ev.sound;
@@ -44,7 +34,7 @@ export function renderMidi(core: WasmCore, pat: Pat, seconds: number, cps: numbe
         groups.set(key, group);
       }
     }
-  } finally { core.free(buffer.ptr, buffer.len); x.sched_free(sched); }
+  } finally { x.sched_free(sched); }
   const tempo: MidiEvent[] = [
     { deltaTime: 0, type: "trackName", text: "Muse" },
     { deltaTime: 0, type: "setTempo", microsecondsPerBeat: Math.round(1e6 / cps) },

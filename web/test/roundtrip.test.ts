@@ -5,9 +5,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { EVENT_HEADER, NCTL, encode, unpackEvents } from "../src/ir";
+import { CTL, EVENT_HEADER, NCTL, encode, unpackEvents } from "../src/ir";
 import { mini } from "../src/mini";
-import { fast, stack, sound } from "../src/dsl";
+import { fast, stack, sound, p } from "../src/dsl";
 import { WasmCore } from "../src/wasm";
 
 const WASM_PATH = resolve(process.cwd(), "target/wasm32-unknown-unknown/release/muse_core.wasm");
@@ -170,5 +170,60 @@ describe("live scheduler buffer growth", () => {
       expect(core.queryScheduled(sched, 0.6)).toHaveLength(0);
       expect(core.queryScheduled(sched, 1.2)).toHaveLength(6);
     } finally { core.releasePattern(handle); x.sched_free(sched); }
+  });
+});
+
+
+describe("pattern limits and pitch chaining", () => {
+  it("preserves rhythm, instrument and effects when chaining a pitch string", async () => {
+    const core = await loadCore();
+    const x = core.exports;
+    const sched = x.sched_new(2);
+    const source = sound("organ", "x*4").gain(0.3).pan(0.8).note("c3 e3");
+    const handle = core.decodePattern(source.pat);
+    try {
+      x.sched_set_pattern(sched, handle);
+      x.sched_reset(sched, 0);
+      const events = core.queryScheduled(sched, 1);
+      expect(events.map((e) => e.onsetCycle)).toEqual([0, 0.25, 0.5, 0.75]);
+      expect(events.map((e) => e.ctl[CTL.note])).toEqual([48, 48, 52, 52]);
+      expect(events.every((e) => e.sound === "organ" && e.ctl[CTL.gain] === 0.3 && e.ctl[CTL.pan] === 0.8 && e.durSec === 0.125)).toBe(true);
+      const chord = core.decodePattern(source.note("(g3 b3)").pat);
+      try { x.sched_set_pattern(sched, chord); } finally { core.releasePattern(chord); }
+      x.sched_reset(sched, 0);
+      expect(core.queryScheduled(sched, 0.25).map((e) => e.ctl[CTL.note]).sort()).toEqual([55, 59]);
+      const rests = core.decodePattern(source.note("c3 ~").pat);
+      try { x.sched_set_pattern(sched, rests); } finally { core.releasePattern(rests); }
+      x.sched_reset(sched, 0);
+      expect(core.queryScheduled(sched, 1).map((e) => e.onsetCycle)).toEqual([0, 0.25]);
+      x.sched_reset(sched, 0.1);
+      expect(core.queryScheduled(sched, 0.4).map((e) => e.ctl[CTL.note])).toEqual([48]);
+    } finally { core.releasePattern(handle); x.sched_free(sched); }
+  });
+
+  it("rejects excessive intermediate queries without advancing the cursor", async () => {
+    const core = await loadCore();
+    const x = core.exports;
+    const sched = x.sched_new(1);
+    try {
+      for (const pattern of [fast(1e9, "bd"), stack(...Array.from({ length: 1024 }, () => fast(20, "bd")))]) {
+        const handle = core.decodePattern(pattern.pat);
+        try { x.sched_set_pattern(sched, handle); } finally { core.releasePattern(handle); }
+        x.sched_reset(sched, 0);
+        expect(x.sched_count(sched, 1)).toBe(-3);
+        expect(() => core.queryScheduled(sched, 1)).toThrow(/query work or event limit/);
+      }
+      const handle = core.decodePattern(p("bd*4").pat);
+      try { x.sched_set_pattern(sched, handle); } finally { core.releasePattern(handle); }
+      expect(core.queryScheduled(sched, 1)).toHaveLength(4);
+    } finally { x.sched_free(sched); }
+  });
+
+  it("rejects cyclic or excessively large trees before serialization", () => {
+    const cyclic = fast(2, "bd").pat;
+    if (cyclic.t === "fast") cyclic.kid = cyclic;
+    expect(() => encode(cyclic)).toThrow(/nesting or node limit/);
+    const huge = stack(...Array.from({ length: 32 }, () => stack(...Array(1024).fill("bd"))));
+    expect(() => encode(huge.pat)).toThrow(/nesting or node limit/);
   });
 });

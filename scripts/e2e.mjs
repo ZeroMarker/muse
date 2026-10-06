@@ -63,6 +63,7 @@ page.on("pageerror", (err) => consoleErrors.push(String(err)));
 
 try {
   await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "load" });
+  await page.waitForFunction(() => Boolean(window.__muse));
 
   check(await page.isVisible("#editor .monaco-editor"), "monaco editor mounted");
 
@@ -97,8 +98,8 @@ try {
   check(peak > 0.005, `worklet DSP renders audio (peak=${peak.toFixed(3)})`);
 
   // hot-swap a new pattern while playing
-  await page.evaluate(() => {
-    const r = window.__muse.evaluate('sound("bd", euclid(5, 8, "bd"))');
+  await page.evaluate(async () => {
+    const r = await window.__muse.evaluate('sound("bd", euclid(5, 8, "bd"))');
     if (!r.ok) throw new Error(r.error);
     window.__muse.engine.setPattern(r.pattern.pat);
   });
@@ -135,6 +136,7 @@ try {
   await page.selectOption("#example", "drums");
   await page.waitForFunction(() => localStorage.getItem("muse.draft.v1")?.includes("Euclidean drums"));
   await page.reload({ waitUntil: "load" });
+  await page.waitForFunction(() => Boolean(window.__muse));
   await page.waitForFunction(() => document.getElementById("editor").textContent.includes("Euclidean"));
   check(true, "draft restored after reload");
   await page.click("#restore");
@@ -164,15 +166,15 @@ try {
   const sampleWav = readFileSync(await (await sampleDownload).path());
   check(sampleWav.subarray(44).some((b) => b !== 0), "custom samples included in browser export");
 
-  // Export evaluates editor code once, retaining access to the browser environment.
+  // Export evaluates code once in a disposable worker without DOM access.
   await page.waitForFunction(() => !document.getElementById("export").disabled);
   await page.locator("#editor .inputarea").focus();
   await page.keyboard.press("Control+a");
-  await page.keyboard.insertText('globalThis.exportEvaluations = (globalThis.exportEvaluations || 0) + 1;\nif (!document.getElementById("editor")) throw new Error("browser context missing");\nnote(60).sound("sine")');
+  await page.keyboard.insertText('globalThis.exportEvaluations = (globalThis.exportEvaluations || 0) + 1;\nif (globalThis.exportEvaluations !== 1 || typeof document !== "undefined") throw new Error("evaluation must run once in a worker");\nnote(60).sound("sine")');
   const singleEvaluation = page.waitForEvent("download");
   await page.click("#export");
   const onceWav = readFileSync(await (await singleEvaluation).path());
-  check(await page.evaluate(() => globalThis.exportEvaluations === 1) && onceWav.subarray(44).some((b) => b !== 0), "export evaluates code once and sends the resulting pattern to its worker");
+  check(await page.evaluate(() => globalThis.exportEvaluations === undefined) && onceWav.subarray(44).some((b) => b !== 0), "export evaluates code once and sends the resulting pattern to its worker");
   let sustainedEnergy = 0;
   const tailFrames = 4800;
   for (let offset = onceWav.length - tailFrames * 4; offset < onceWav.length; offset += 4) {
@@ -207,6 +209,7 @@ try {
   await page.click("#stop");
 
   await page.reload({ waitUntil: "load" });
+  await page.waitForFunction(() => Boolean(window.__muse));
   await page.waitForFunction((name) => window.__muse.engine.samples.has(name) && window.__muse.engine.samples.has("my_sample"), longName);
   check(await page.evaluate(() => !window.__muse.engine.audioReady), "samples restore from local storage without starting audio");
   await page.click("#run");
@@ -217,6 +220,7 @@ try {
   await page.click("#delete-sample");
   await page.waitForFunction((name) => !window.__muse.engine.samples.has(name), longName);
   await page.reload({ waitUntil: "load" });
+  await page.waitForFunction(() => Boolean(window.__muse));
   await page.waitForFunction(() => document.getElementById("sample-status").textContent.includes("restored"));
   check(await page.evaluate((name) => !window.__muse.engine.samples.has(name) && window.__muse.engine.samples.has("my_sample"), longName), "sample deletion persists and preserves other samples");
 
@@ -266,6 +270,7 @@ try {
   try {
     await failurePage.route("**/*ffmpeg-core*.wasm", (route) => route.fulfill({ status: 404, body: "not found" }));
     await failurePage.goto("http://127.0.0.1:" + PORT + "/", { waitUntil: "load" });
+    await failurePage.waitForFunction(() => Boolean(window.__muse));
     await failurePage.fill("#export-seconds", "1");
     await failurePage.selectOption("#export-format", "mp3");
     await failurePage.click("#export");
@@ -277,6 +282,72 @@ try {
     check((await recovery).suggestedFilename() === "muse.wav", "WAV works after encoder loading fails");
   } finally { await failurePage.close(); }
 
+  // Loops must time out or be cancellable without blocking transport/UI.
+  const resiliencePage = await browser.newPage();
+  try {
+    await resiliencePage.goto("http://127.0.0.1:" + PORT + "/", { waitUntil: "load" });
+    await resiliencePage.waitForFunction(() => Boolean(window.__muse));
+    const setCode = async (code) => {
+      await resiliencePage.locator("#editor .inputarea").focus();
+      await resiliencePage.keyboard.press("Control+a");
+      await resiliencePage.keyboard.insertText(code);
+    };
+    await setCode("while (true) {}\n note(60)");
+    await resiliencePage.click("#run");
+    await resiliencePage.waitForFunction(() => document.getElementById("console").textContent.includes("evaluation timed out"));
+    check(true, "infinite editor loops time out without freezing the UI");
+    await resiliencePage.click("#run");
+    await resiliencePage.click("#stop");
+    await setCode('note(60).sound("sine")');
+    await resiliencePage.click("#run");
+    await resiliencePage.waitForFunction(() => window.__muse.engine.playing && window.__muse.engine.peak > 0.005);
+    check(true, "Stop cancels evaluation and a fresh Run plays successfully");
+    await resiliencePage.click("#stop");
+    await setCode("while (true) {}\n note(60)");
+    await resiliencePage.click("#export");
+    await resiliencePage.click("#cancel-export");
+    check(await resiliencePage.locator("#export").isEnabled(), "export evaluation can be cancelled");
+    await setCode('stack(...Array.from({length: 64}, (_, i) => note(30+i).sound("organ")))');
+    await resiliencePage.fill("#export-seconds", "300");
+    await resiliencePage.click("#export");
+    await resiliencePage.waitForFunction(() => /^rendering [1-9]\d?%$/.test(document.getElementById("export").textContent));
+    await resiliencePage.click("#cancel-export");
+    check(await resiliencePage.locator("#export").isEnabled() && await resiliencePage.locator("#cancel-export").isDisabled(), "rendering reports progress and cancellation restores controls");
+    await setCode('note(60).sound("sine")');
+    await resiliencePage.fill("#export-seconds", "1");
+    const recoveredExport = resiliencePage.waitForEvent("download");
+    await resiliencePage.click("#export");
+    check((await recoveredExport).suggestedFilename() === "muse.wav", "export works after cancelling a render");
+    await resiliencePage.waitForFunction(() => !document.getElementById("export").disabled);
+    let releaseEncoder;
+    const encoderGate = new Promise((resolve) => { releaseEncoder = resolve; });
+    await resiliencePage.route("**/*ffmpeg-core*.wasm", async (route) => {
+      await encoderGate;
+      try { await route.continue(); } catch { /* cancelled worker request */ }
+    });
+    try {
+      await resiliencePage.selectOption("#export-format", "mp3");
+      const encoderRequested = resiliencePage.waitForRequest("**/*ffmpeg-core*.wasm");
+      await resiliencePage.click("#export");
+      await encoderRequested;
+      await resiliencePage.click("#cancel-export");
+      check(await resiliencePage.locator("#export").isEnabled() && await resiliencePage.locator("#export-format").isEnabled(), "encoder loading can be cancelled without trapping the UI");
+    } finally {
+      releaseEncoder();
+      await resiliencePage.unroute("**/*ffmpeg-core*.wasm");
+      await resiliencePage.selectOption("#export-format", "wav");
+    }
+    await setCode('fast(1e9, "bd")');
+    await resiliencePage.click("#run");
+    await resiliencePage.waitForFunction(() => document.getElementById("console").textContent.includes("query work or event limit"));
+    check(await resiliencePage.evaluate(() => !window.__muse.engine.playing), "excessive queries stop playback with an actionable error");
+    await setCode('stack(...Array.from({length: 129}, (_, i) => note(i).sound("sine")))');
+    await resiliencePage.click("#run");
+    await resiliencePage.waitForFunction(() => document.getElementById("console").textContent.includes("audio overloaded"));
+    check(true, "audio capacity limits are reported in the UI");
+    await resiliencePage.click("#stop");
+  } finally { await resiliencePage.close(); }
+
   // When local storage is unavailable, samples still work for the session.
   const storagePage = await browser.newPage();
   try {
@@ -284,6 +355,7 @@ try {
       Object.defineProperty(globalThis, "indexedDB", { value: { open() { throw new Error("storage unavailable"); } } });
     });
     await storagePage.goto("http://127.0.0.1:" + PORT + "/", { waitUntil: "load" });
+    await storagePage.waitForFunction(() => Boolean(window.__muse));
     await storagePage.waitForFunction(() => document.getElementById("sample-status").textContent.includes("could not be restored"));
     await storagePage.setInputFiles("#sample-file", { name: "session.wav", mimeType: "audio/wav", buffer: wav });
     await storagePage.waitForFunction(() => document.getElementById("sample-status").textContent.includes("could not save"));

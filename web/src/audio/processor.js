@@ -162,6 +162,7 @@ class MuseProcessor extends AudioWorkletProcessor {
         rawPeak: this.rawPeak,
         nanCount: this.nanCount,
         stats: this.x.dsp_stats(this.h),
+        overloads: this.x.dsp_overloads(this.h),
         frame: currentFrame,
         time: currentTime,
       });

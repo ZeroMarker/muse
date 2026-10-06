@@ -1,7 +1,9 @@
 // Offline rendering: pattern → scheduled events → DSP → 16-bit PCM (stereo).
 
 import type { WasmCore } from "./wasm";
-import { NCTL, type Pat, unpackEvents } from "./ir";
+import { NCTL, type Pat } from "./ir";
+
+import { validateSampleBudget } from "./samples";
 
 export const SAMPLE_RATE = 48000;
 
@@ -13,10 +15,12 @@ export function renderOffline(
   cps: number,
   sampleRate = SAMPLE_RATE,
   samples: ReadonlyMap<string, { data: Float32Array; rate: number }> = new Map(),
+  onProgress?: (percent: number) => void,
 ): Int16Array {
   if (!Number.isFinite(seconds) || seconds <= 0 || seconds > 300) throw new Error("duration must be 0–300 seconds");
   if (!Number.isFinite(cps) || cps <= 0) throw new Error("tempo must be positive");
   if (!Number.isInteger(sampleRate) || sampleRate < 8000 || sampleRate > 192000) throw new Error("invalid sample rate");
+  validateSampleBudget(samples);
   const x = core.exports;
   const sched = x.sched_new(cps);
   try {
@@ -33,7 +37,8 @@ export function renderOffline(
       for (const [name, sample] of samples) core.loadSample(h, name, sample.data, sample.rate);
       const ctlAlloc = core.allocBytes(NCTL * 8);
       const sndAlloc = core.allocBytes(128);
-      let eventBuf = core.allocBytes(1024);
+      let eventsTotal = 0;
+      let lastPercent = -1;
       const totalFrames = Math.ceil(seconds * sampleRate);
       const out = new Int16Array(totalFrames * 2);
       const chunk = 256;
@@ -43,15 +48,10 @@ export function renderOffline(
         for (let frame = 0; frame < totalFrames; frame += chunk) {
           const n = Math.min(chunk, totalFrames - frame);
           const horizon = x.sched_cycle_at(sched, (frame + n) / sampleRate);
-          let written = x.sched_query(sched, horizon, eventBuf.ptr, eventBuf.len);
-          while (written === -2) {
-            const larger = core.allocBytes(eventBuf.len * 2);
-            core.free(eventBuf.ptr, eventBuf.len);
-            eventBuf = larger;
-            written = x.sched_query(sched, horizon, eventBuf.ptr, eventBuf.len);
-          }
-          if (written < 0) throw new Error(`sched_query failed (${written})`);
-          for (const ev of unpackEvents(core.readBytes(eventBuf.ptr, written))) {
+          const events = core.queryScheduled(sched, horizon);
+          eventsTotal += events.length;
+          if (eventsTotal > 1_000_000) throw new Error("audio export supports at most 1,000,000 events");
+          for (const ev of events) {
             new Float64Array(x.memory.buffer, ctlAlloc.ptr, NCTL).set(ev.ctl);
             const nlen = Math.min(ev.sound.length, 127);
             const sndView = new Uint8Array(x.memory.buffer, sndAlloc.ptr, nlen);
@@ -66,17 +66,19 @@ export function renderOffline(
             );
           }
           x.dsp_process(h, lPtr.ptr, rPtr.ptr, n, frame);
+          if (x.dsp_overloads(h)) throw new Error("audio export overloaded: simplify the pattern (128 voices, 4096 pending notes)");
           const l = new Float32Array(x.memory.buffer, lPtr.ptr, n);
           const r = new Float32Array(x.memory.buffer, rPtr.ptr, n);
           for (let i = 0; i < n; i++) {
             out[(frame + i) * 2] = toI16(l[i]);
             out[(frame + i) * 2 + 1] = toI16(r[i]);
           }
+          const percent = Math.floor((frame + n) * 100 / totalFrames);
+          if (percent !== lastPercent) { lastPercent = percent; onProgress?.(percent); }
         }
       } finally {
         core.free(lPtr.ptr, lPtr.len);
         core.free(rPtr.ptr, rPtr.len);
-        core.free(eventBuf.ptr, eventBuf.len);
         core.free(ctlAlloc.ptr, ctlAlloc.len);
         core.free(sndAlloc.ptr, sndAlloc.len);
       }

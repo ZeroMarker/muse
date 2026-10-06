@@ -40,6 +40,7 @@ export type Pat =
   | { t: "setctl"; slot: number; v: number; kid: Pat }
   | { t: "setsound"; sound: string; kid: Pat }
   | { t: "addctl"; slot: number; d: number; kid: Pat }
+  | { t: "withnote"; pitches: Pat; kid: Pat }
   | { t: "chunk"; n: number; step: Pat; kid: Pat };
 
 export const rest: Pat = { t: "rest" };
@@ -119,6 +120,7 @@ const TAG = {
   sometimes: 14,
   addctl: 15,
   chunk: 16,
+  withnote: 17,
 } as const;
 
 function node(w: Writer, p: Pat): void {
@@ -195,6 +197,11 @@ function node(w: Writer, p: Pat): void {
       w.f64(p.d);
       node(w, p.kid);
       return;
+    case "withnote":
+      w.u8(TAG.withnote);
+      node(w, p.pitches);
+      node(w, p.kid);
+      return;
     case "chunk":
       w.u8(TAG.chunk);
       w.u64(p.n);
@@ -218,6 +225,22 @@ function writeKids(w: Writer, kids: Pat[]) {
 
 /** Encode a pattern to the wasm-side IR buffer. */
 export function encode(pat: Pat): Uint8Array {
+  const pending: [Pat, number][] = [[pat, 0]];
+  let count = 0;
+  while (pending.length) {
+    const [node, depth] = pending.pop()!;
+    if (depth > 64 || ++count > 16384) throw new Error("pattern exceeds nesting or node limit");
+    if ("kids" in node) {
+      if (!node.kids.length || node.kids.length > 1024) throw new Error("bad child count");
+      for (const kid of node.kids) pending.push([kid, depth + 1]);
+    }
+    if ("kid" in node) pending.push([node.kid, depth + 1]);
+    if ("step" in node) pending.push([node.step, depth + 1]);
+    if ("pitches" in node) pending.push([node.pitches, depth + 1]);
+    if ("sound" in node && (node.sound.length > 127 || !/^[\x00-\x7f]*$/.test(node.sound))) {
+      throw new Error("instrument names must be ASCII and at most 127 characters");
+    }
+  }
   const w = new Writer();
   w.u8(0x4d);
   w.u8(0x55);

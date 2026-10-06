@@ -175,12 +175,14 @@ pub unsafe extern "C" fn sched_count(sched_h: i32, horizon: f64) -> i32 {
     if sched_h == 0 {
         return -1;
     }
-    (*(sched_h as *mut sched::Sched)).count(horizon) as i32
+    let count = (*(sched_h as *mut sched::Sched)).count(horizon);
+    if count < 0 { set_err("pattern exceeds query work or event limit"); }
+    count
 }
 
 /// Pack events from `[cursor, horizon)` into `out` (see `sched.rs` for the
 /// record layout), advancing the cursor. Returns bytes written, or a negative
-/// error code (`-1` bad handle, `-2` buffer too small).
+/// error code (`-1` bad handle, `-2` buffer too small, `-3` query budget exceeded).
 ///
 /// # Safety
 /// `out` must reference `cap` writable bytes.
@@ -193,7 +195,10 @@ pub unsafe extern "C" fn sched_query(sched_h: i32, horizon: f64, out: *mut u8, c
     let buf = std::slice::from_raw_parts_mut(out, cap as usize);
     match s.query(horizon, buf) {
         Ok(n) => n as i32,
-        Err(_) => -2,
+        Err(code) => {
+            if code == -3 { set_err("pattern exceeds query work or event limit"); }
+            code
+        },
     }
 }
 
@@ -216,7 +221,10 @@ pub unsafe extern "C" fn sched_peek(
     let buf = std::slice::from_raw_parts_mut(out, cap as usize);
     match s.pack_range(lo, hi, buf) {
         Ok(n) => n as i32,
-        Err(_) => -2,
+        Err(code) => {
+            if code == -3 { set_err("pattern exceeds query work or event limit"); }
+            code
+        },
     }
 }
 
@@ -290,7 +298,14 @@ pub unsafe extern "C" fn dsp_stats(h: i32) -> u32 {
     }
     let d = &*(h as *const dsp::Dsp);
     let (v, p) = d.stats();
-    (((v.min(0xffff) as u32) << 16) | (p.min(0xffff) as u32))
+    ((v.min(0xffff) as u32) << 16) | (p.min(0xffff) as u32)
+}
+
+/// Total dropped notes and stolen voices for this DSP instance.
+#[no_mangle]
+pub unsafe extern "C" fn dsp_overloads(h: i32) -> u32 {
+    if h == 0 { return 0; }
+    (*(h as *const dsp::Dsp)).overloads
 }
 
 /// Diagnostics pack: sched_calls (f64 bits via separate calls instead).

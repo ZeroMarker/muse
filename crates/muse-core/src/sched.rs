@@ -12,7 +12,7 @@
 //! exactly once, and no events are missed when the window slides.
 
 use crate::ir::{Pat, DEFAULTS, NCTL};
-use crate::pattern::{query, Hap, Span};
+use crate::pattern::{query_bounded, Hap, Span};
 
 /// Bytes per packed event header (before the variable-length sound name):
 /// onset f64 + dur f64 + ctl[NCTL] f64.
@@ -55,12 +55,12 @@ impl Sched {
         self.cursor = self.cycle_at(audio_now);
     }
 
-    fn haps(&self, lo: f64, hi: f64) -> Vec<Hap> {
-        let Some(pat) = &self.pat else { return Vec::new() };
+    fn haps(&self, lo: f64, hi: f64) -> Result<Vec<Hap>, i32> {
+        let Some(pat) = &self.pat else { return Ok(Vec::new()) };
         if hi <= lo {
-            return Vec::new();
+            return Ok(Vec::new());
         }
-        let mut haps = query(pat, Span::new(lo, hi));
+        let mut haps = query_bounded(pat, Span::new(lo, hi)).map_err(|_| -3)?;
         // Dedup + drop events whose onset already passed the window start.
         haps.retain(|h| h.whole.start >= lo && h.whole.start < hi && h.whole.len() > 1e-9);
         haps.sort_by(|a, b| a.whole.start.total_cmp(&b.whole.start));
@@ -70,16 +70,16 @@ impl Sched {
                 && a.sound == b.sound
                 && a.ctl == b.ctl
         });
-        haps
+        Ok(haps)
     }
 
     /// Number of events in the un-scheduled window `[cursor, horizon)`.
-    pub fn count(&self, horizon: f64) -> usize {
-        self.haps(self.cursor, horizon).len()
+    pub fn count(&self, horizon: f64) -> i32 {
+        self.haps(self.cursor, horizon).map(|haps| haps.len() as i32).unwrap_or(-3)
     }
 
     /// Pack events from `[cursor, horizon)` into `out`, advancing the cursor.
-    pub fn query(&mut self, horizon: f64, out: &mut [u8]) -> Result<usize, ()> {
+    pub fn query(&mut self, horizon: f64, out: &mut [u8]) -> Result<usize, i32> {
         let lo = self.cursor;
         let n = self.pack_range(lo, horizon, out)?;
         if horizon > lo {
@@ -89,14 +89,14 @@ impl Sched {
     }
 
     /// Pack events with onset in `[lo, hi)` without touching the cursor.
-    pub fn pack_range(&self, lo: f64, hi: f64, out: &mut [u8]) -> Result<usize, ()> {
-        let haps = self.haps(lo, hi);
+    pub fn pack_range(&self, lo: f64, hi: f64, out: &mut [u8]) -> Result<usize, i32> {
+        let haps = self.haps(lo, hi)?;
         let mut i = 0usize;
         for h in &haps {
             let sound = h.sound.as_bytes();
             let need = EVENT_HEADER + 2 + sound.len();
             if i + need > out.len() {
-                return Err(());
+                return Err(-2);
             }
             let dur_cycles = h.whole.len();
             let dur_sec = dur_cycles / self.cps; // carried for convenience

@@ -3,7 +3,7 @@
 
 import { type Pat, type SchedEvent, unpackEvents } from "../ir";
 import { type CoreExports, WasmCore } from "../wasm";
-import { validateSample, validateSampleName, type SampleData } from "../samples";
+import { validateSample, validateSampleName, validateSampleBudget, type SampleData } from "../samples";
 import processorUrl from "./processor.js?url";
 
 /** How far ahead we schedule, in audio seconds. */
@@ -41,6 +41,7 @@ export class Engine {
   private initializing: Promise<void> | null = null;
   private closing: Promise<void> = Promise.resolve();
   private pattern: Pat | null = null;
+  private overloads = 0;
 
   readonly samples = new Map<string, SampleData>();
 
@@ -85,6 +86,7 @@ export class Engine {
     this.core = null;
     this.peak = 0;
     this.workletDiag = null;
+    this.overloads = 0;
     this.closing = ctx ? ctx.close().catch(() => {}) : this.closing;
     return this.closing;
   }
@@ -141,6 +143,10 @@ export class Engine {
           this.peak = e.data.peak;
           if (typeof e.data.notes === "number") this.workletNotes = e.data.notes;
           this.workletDiag = e.data;
+          if (e.data.overloads > this.overloads) {
+            this.hooks.onLog?.(`audio overloaded: ${e.data.overloads - this.overloads} notes dropped or voices replaced; simplify the pattern`, "error");
+            this.overloads = e.data.overloads;
+          }
         } else if (e.data.type === "hello") {
           this.hooks.onLog?.("worklet processor alive");
         }
@@ -173,6 +179,7 @@ export class Engine {
 
   registerSample(name: string, sample: SampleData): void {
     validateSample(name, sample);
+    validateSampleBudget(this.samples, name, sample);
     this.samples.set(name, sample);
     if (this.initialized) this.node!.port.postMessage({ type: "sample", name, ...sample });
   }
@@ -314,6 +321,7 @@ export class Engine {
         this.core!.free(ptr, len);
       }
     } catch (e) {
+      this.stop();
       this.hooks.onLog?.(String(e), "error");
     }
 

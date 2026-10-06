@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
-import { validateSample, validateSampleName, type SampleData } from "../web/src/samples";
+import { validateSample, validateSampleName, validateSampleBudget, type SampleData } from "../web/src/samples";
 
 /** Decode external audio through system FFmpeg, with bounded time and output. */
 export function loadSamples(specs: string[]): Map<string, SampleData> {
@@ -26,6 +26,7 @@ export function loadSamples(specs: string[]): Map<string, SampleData> {
     for (let i = 0; i < data.length; i++) data[i] = result.stdout.readFloatLE(i * 4);
     const sample = { data, rate: 48000 };
     validateSample(name, sample);
+    validateSampleBudget(samples, name, sample);
     samples.set(name, sample);
   }
   return samples;

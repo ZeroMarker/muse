@@ -29,6 +29,7 @@ export interface CoreExports {
   dsp_flush(h: number): void;
   dsp_clear_pending(h: number): void;
   dsp_stats(h: number): number;
+  dsp_overloads(h: number): number;
   dsp_free(h: number): void;
 }
 
@@ -88,7 +89,7 @@ export class WasmCore {
         buffer = larger;
         written = this.exports.sched_query(sched, horizon, buffer.ptr, buffer.len);
       }
-      if (written < 0) throw new WasmError(`sched_query failed (${written})`);
+      if (written < 0) throw new WasmError(written === -3 ? this.lastError() || "pattern exceeds query work or event limit" : `sched_query failed (${written})`);
       return unpackEvents(this.readBytes(buffer.ptr, written));
     } finally { this.free(buffer.ptr, buffer.len); }
   }

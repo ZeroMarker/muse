@@ -25,6 +25,7 @@
 //!  15 AddCtl  u8 slot, f64 delta, node child    (transpose-style, NaN -> default)
 //!  16 Chunk   u64 n, node step, node child      (cycle split into n slots,
 //!                                                 slot `cycle % n` gets `step`)
+//!  17 WithNote node pitches, node child         (sample pitch at child onset)
 //! ```
 
 /// Number of control slots carried by every event.
@@ -61,6 +62,8 @@ pub const DEFAULTS: [f64; NCTL] = [
 
 #[derive(Clone, Debug)]
 pub enum Pat {
+    /// Sample pitches at child onsets, preserving child timing and controls.
+    WithNote(Box<Pat>, Box<Pat>),
     /// No events.
     Rest,
     /// One event per cycle, occupying the whole cycle in its own frame.
@@ -102,6 +105,7 @@ pub enum Pat {
 struct Reader<'a> {
     b: &'a [u8],
     i: usize,
+    nodes: usize,
 }
 
 impl<'a> Reader<'a> {
@@ -140,6 +144,8 @@ impl<'a> Reader<'a> {
 }
 
 fn node(r: &mut Reader, depth: usize) -> Result<Pat, String> {
+    r.nodes += 1;
+    if r.nodes > 16_384 { return Err("pattern has too many nodes".into()); }
     if depth > 64 {
         return Err("pattern nesting too deep".into());
     }
@@ -148,6 +154,7 @@ fn node(r: &mut Reader, depth: usize) -> Result<Pat, String> {
         0 => Ok(Pat::Rest),
         1 => {
             let sound = r.str()?;
+            if sound.len() > 127 || !sound.is_ascii() { return Err("bad instrument name".into()); }
             let mut ctl = [f64::NAN; NCTL];
             for c in ctl.iter_mut() {
                 *c = r.f64()?;
@@ -203,6 +210,7 @@ fn node(r: &mut Reader, depth: usize) -> Result<Pat, String> {
         }
         12 => {
             let s = r.str()?;
+            if s.len() > 127 || !s.is_ascii() { return Err("bad instrument name".into()); }
             Ok(Pat::SetSound(s, Box::new(node(r, depth + 1)?)))
         }
         13 => {
@@ -232,6 +240,7 @@ fn node(r: &mut Reader, depth: usize) -> Result<Pat, String> {
             let child = Box::new(node(r, depth + 1)?);
             Ok(Pat::Chunk(n, step, child))
         }
+        17 => Ok(Pat::WithNote(Box::new(node(r, depth + 1)?), Box::new(node(r, depth + 1)?))),
         t => Err(format!("unknown IR tag {t}")),
     }
 }
@@ -245,7 +254,7 @@ fn children(r: &mut Reader, depth: usize) -> Result<Vec<Pat>, String> {
 }
 
 pub fn decode(bytes: &[u8]) -> Result<Pat, String> {
-    let mut r = Reader { b: bytes, i: 0 };
+    let mut r = Reader { b: bytes, i: 0, nodes: 0 };
     if r.take(4)? != b"MUSE" {
         return Err("bad magic".into());
     }
@@ -255,4 +264,24 @@ pub fn decode(bytes: &[u8]) -> Result<Pat, String> {
     }
     let p = node(&mut r, 0)?;
     Ok(p)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_large_wire_trees_without_js_validation() {
+        let mut bytes = b"MUSE".to_vec();
+        bytes.extend(1u32.to_le_bytes());
+        bytes.push(3); // overlay of 32 overlays, each containing 1024 rests
+        bytes.extend(32u32.to_le_bytes());
+        for _ in 0..32 {
+            bytes.push(3);
+            bytes.extend(1024u32.to_le_bytes());
+            bytes.extend([0; 1024]);
+        }
+        assert!(decode(&bytes).unwrap_err().contains("too many nodes"));
+    }
 }

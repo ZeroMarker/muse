@@ -15,7 +15,8 @@ self.onmessage = async (event: MessageEvent) => {
       self.postMessage({ bytes, extension: metadata.extension, mime: metadata.mime }, { transfer: [bytes.buffer] });
       return;
     }
-    const pcm = renderOffline(core, pat, seconds, cps, SAMPLE_RATE, new Map(sampleEntries));
+    const pcm = renderOffline(core, pat, seconds, cps, SAMPLE_RATE, new Map(sampleEntries),
+      (percent) => self.postMessage({ phase: `rendering ${percent}%` }));
     const wav = encodeWav(pcm, SAMPLE_RATE, 2);
     const bytes = format === "wav" ? wav : await (await import("./encode")).encodeAudio(wav, format, baseURL,
       (phase) => self.postMessage({ phase }));

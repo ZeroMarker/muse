@@ -12,10 +12,12 @@ export class Pattern {
   constructor(readonly pat: Pat) {}
 
   fast(k: number): Pattern {
+    if (!Number.isFinite(k) || k <= 0) throw new Error("fast factor must be finite and positive");
     return new Pattern({ t: "fast", k, kid: this.pat });
   }
 
   slow(k: number): Pattern {
+    if (!Number.isFinite(k) || k <= 0) throw new Error("slow factor must be finite and positive");
     return new Pattern({ t: "fast", k: 1 / k, kid: this.pat });
   }
 
@@ -101,8 +103,8 @@ export class Pattern {
 
   note(v: number | string): Pattern {
     if (typeof v === "string") {
-      // note("c3 e3 g3") — each token carries its own pitch
-      return toPattern(v);
+      // Sample the pitch pattern at each existing event onset.
+      return new Pattern({ t: "withnote", pitches: mini(v), kid: this.pat });
     }
     return ctlSet(CTL.note, v, this.pat);
   }

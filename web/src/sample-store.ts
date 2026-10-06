@@ -1,4 +1,4 @@
-import { validateSample, type SampleData } from "./samples";
+import { validateSample, validateSampleBudget, type SampleData } from "./samples";
 
 type SavedSample = SampleData & { name: string };
 
@@ -27,6 +27,7 @@ async function transaction<T>(mode: IDBTransactionMode, operation: (store: IDBOb
 export async function readSamples(): Promise<SavedSample[]> {
   const samples = await transaction<SavedSample[]>("readonly", (store) => store.getAll());
   for (const sample of samples) validateSample(sample.name, sample);
+  validateSampleBudget(new Map(samples.map(({ name, ...sample }) => [name, sample])));
   return samples;
 }
 

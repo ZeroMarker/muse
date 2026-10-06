@@ -28,6 +28,8 @@ export class Driver {
   private scheduleTimer: ReturnType<typeof setInterval> | null = null;
   private renderTimer: ReturnType<typeof setTimeout> | null = null;
   private pattern: Pat | null = null;
+  private overloads = 0;
+  private lastOverloadLog = -Infinity;
 
   cps = 2; // 120 bpm
   playing = false;
@@ -146,6 +148,7 @@ export class Driver {
           ev.durSec, this.ctlPtr, this.sndPtr, nlen);
       }
     } catch (e) {
+      this.stop();
       this.log(`schedule error: ${String(e)}`);
     }
   }
@@ -166,6 +169,12 @@ export class Driver {
         while (this.rendered < target) {
           const n = Math.min(CHUNK, target - this.rendered);
           this.x.dsp_process(this.dsp, this.lPtr, this.rPtr, n, this.rendered);
+          const overloads = this.x.dsp_overloads(this.dsp);
+          if (overloads > this.overloads && this.now() - this.lastOverloadLog >= 1) {
+            this.log(`audio overloaded: ${overloads - this.overloads} notes dropped or voices replaced; simplify the pattern`);
+            this.overloads = overloads;
+            this.lastOverloadLog = this.now();
+          }
           const l = new Float32Array(this.x.memory.buffer, this.lPtr, n);
           const r = new Float32Array(this.x.memory.buffer, this.rPtr, n);
           const pcm = new Int16Array(n * 2);

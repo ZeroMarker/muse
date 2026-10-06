@@ -238,6 +238,8 @@ pub struct Dsp {
     pub spawned_total: u32,
     /// diagnostics: first schedule() argument seen
     pub first_at: f64,
+    /// Notes dropped or voices stolen because of audio capacity limits.
+    pub overloads: u32,
 }
 
 impl Dsp {
@@ -254,6 +256,7 @@ impl Dsp {
             sched_calls: 0,
             spawned_total: 0,
             first_at: f64::NAN,
+            overloads: 0,
         }
     }
 
@@ -285,18 +288,20 @@ impl Dsp {
         if self.sched_calls == 1 {
             self.first_at = at_sec;
         }
-        if self.pending.len() >= MAX_PENDING || !at_sec.is_finite() {
+        if !at_sec.is_finite() { return; }
+        if self.pending.len() >= MAX_PENDING {
+            self.overloads = self.overloads.saturating_add(1);
             return;
         }
         let start_frame = (at_sec * self.sr).round() as i64;
-        self.pending.push(Pending {
+        let index = self.pending.partition_point(|p| p.start_frame <= start_frame);
+        self.pending.insert(index, Pending {
             start_frame,
             dur: dur_sec.max(0.01),
             ctl: *ctl,
             wave: wave_from_name(sound),
             sample: self.samples.get(sound).cloned(),
         });
-        self.pending.sort_by_key(|p| p.start_frame);
     }
 
     fn spawn(&mut self, p: &Pending) {
@@ -390,6 +395,7 @@ impl Dsp {
 
         self.spawned_total = self.spawned_total.wrapping_add(1);
         if self.voices.len() >= MAX_VOICES {
+            self.overloads = self.overloads.saturating_add(1);
             // steal the oldest
             let oldest = self
                 .voices
@@ -533,6 +539,17 @@ mod tests {
 
     fn default_ctl() -> [f64; NCTL] {
         DEFAULTS
+    }
+
+    #[test]
+    fn reports_pending_and_voice_capacity_overloads() {
+        let mut dsp = Dsp::new(48000.0);
+        let ctl = [f64::NAN; NCTL];
+        for _ in 0..(MAX_PENDING + 1) { dsp.schedule(0.0, 1.0, &ctl, "sine"); }
+        assert_eq!(dsp.overloads, 1);
+        dsp.process(&mut [0.0; 128], &mut [0.0; 128], 0);
+        assert_eq!(dsp.overloads, 1 + (MAX_PENDING - MAX_VOICES) as u32);
+        assert_eq!(dsp.stats(), (MAX_VOICES, 0));
     }
 
     #[test]

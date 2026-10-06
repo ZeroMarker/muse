@@ -73,19 +73,73 @@ fn cycle_rand(c: i64) -> f64 {
     (x >> 11) as f64 / (1u64 << 53) as f64
 }
 
+struct Budget { work: usize, events: usize, exceeded: bool }
+
+impl Budget {
+    fn spend(&mut self, amount: usize) -> bool {
+        self.work = self.work.saturating_add(amount);
+        if self.work > 100_000 { self.exceeded = true; }
+        !self.exceeded
+    }
+    fn event(&mut self) -> bool {
+        self.events += 1;
+        if self.events > 16_384 { self.exceeded = true; }
+        self.spend(1)
+    }
+}
+
+/// Bound intermediate work as well as the final event vector.
+pub fn query_bounded(pat: &Pat, span: Span) -> Result<Vec<Hap>, ()> {
+    let mut budget = Budget { work: 0, events: 0, exceeded: false };
+    let result = query_inner(pat, span, &mut budget);
+    if budget.exceeded { Err(()) } else { Ok(result) }
+}
+
+#[cfg(test)]
 pub fn query(pat: &Pat, span: Span) -> Vec<Hap> {
+    query_bounded(pat, span).expect("test query exceeded budget")
+}
+
+fn query_inner(pat: &Pat, span: Span, budget: &mut Budget) -> Vec<Hap> {
+    if !budget.spend(1) { return Vec::new(); }
+    if !span.start.is_finite() || !span.end.is_finite()
+        || span.start.abs() > 1e12 || span.end.abs() > 1e12
+        || span.end.ceil() - span.start.floor() > MAX_CYCLES as f64 {
+        budget.exceeded = true;
+        return Vec::new();
+    }
     if span.is_empty() {
         return Vec::new();
     }
-    match pat {
+    let result = match pat {
+        Pat::WithNote(pitches, kid) => {
+            let events = query_inner(kid, span, budget);
+            let lo = events.iter().fold(span.start, |lo, h| lo.min(h.whole.start));
+            let notes = query_inner(pitches, Span::new(lo, span.end), budget);
+            let mut out = Vec::new();
+            for event in events {
+                for pitch in &notes {
+                    if !budget.spend(1) { return Vec::new(); }
+                    if pitch.whole.start <= event.whole.start && event.whole.start < pitch.whole.end {
+                        if !budget.event() { return Vec::new(); }
+                        let mut h = event.clone();
+                        h.ctl[crate::ir::CTL_NOTE] = pitch.ctl[crate::ir::CTL_NOTE];
+                        out.push(h);
+                    }
+                }
+            }
+            out
+        }
         Pat::Rest => Vec::new(),
 
         Pat::Atom { sound, ctl } => {
             let mut out = Vec::new();
             for c in span.cycles() {
+                if !budget.spend(1) { return Vec::new(); }
                 let whole = Span::new(c as f64, c as f64 + 1.0);
                 let part = whole.intersect(span);
                 if !part.is_empty() {
+                    if !budget.event() { return Vec::new(); }
                     out.push(Hap { whole, part, ctl: *ctl, sound: sound.clone() });
                 }
             }
@@ -99,14 +153,16 @@ pub fn query(pat: &Pat, span: Span) -> Vec<Hap> {
             let n = kids.len() as f64;
             let mut out = Vec::new();
             for c in span.cycles() {
+                if !budget.spend(1) { return Vec::new(); }
                 let base = c as f64;
                 for (i, kid) in kids.iter().enumerate() {
+                    if !budget.spend(1) { return Vec::new(); }
                     let slot = Span::new(base + i as f64 / n, base + (i + 1) as f64 / n);
                     let q = slot.intersect(span);
                     if q.is_empty() {
                         continue;
                     }
-                    for mut h in query(kid, q) {
+                    for mut h in query_inner(kid, q, budget) {
                         h.whole = h.whole.intersect(slot);
                         h.part = h.part.intersect(q);
                         if !h.whole.is_empty() && !h.part.is_empty() {
@@ -121,7 +177,8 @@ pub fn query(pat: &Pat, span: Span) -> Vec<Hap> {
         Pat::Overlay(kids) => {
             let mut out = Vec::new();
             for kid in kids {
-                out.extend(query(kid, span));
+                if !budget.spend(1) { return Vec::new(); }
+                out.extend(query_inner(kid, span, budget));
             }
             out
         }
@@ -129,10 +186,10 @@ pub fn query(pat: &Pat, span: Span) -> Vec<Hap> {
         Pat::Fast(k, kid) => {
             let k = if k.is_finite() && k.abs() > 1e-9 { k.abs() } else { 1.0 };
             let inner = Span::new(span.start * k, span.end * k);
-            if inner.is_empty() || inner.len() > 1e7 {
+            if inner.is_empty() {
                 return Vec::new();
             }
-            query(kid, inner)
+            query_inner(kid, inner, budget)
                 .into_iter()
                 .map(|mut h| {
                     h.whole = Span::new(h.whole.start / k, h.whole.end / k);
@@ -146,12 +203,13 @@ pub fn query(pat: &Pat, span: Span) -> Vec<Hap> {
             let n = (*n).max(1);
             let mut out = Vec::new();
             for c in span.cycles() {
+                if !budget.spend(1) { return Vec::new(); }
                 let cs = Span::new(c as f64, c as f64 + 1.0).intersect(span);
                 if cs.is_empty() {
                     continue;
                 }
                 let source = if c.rem_euclid(n) == 0 { step } else { kid };
-                for mut h in query(source, cs) {
+                for mut h in query_inner(source, cs, budget) {
                     h.part = h.part.intersect(cs);
                     if !h.part.is_empty() && !h.whole.is_empty() {
                         out.push(h);
@@ -164,12 +222,13 @@ pub fn query(pat: &Pat, span: Span) -> Vec<Hap> {
         Pat::Sometimes(prob, step, kid) => {
             let mut out = Vec::new();
             for c in span.cycles() {
+                if !budget.spend(1) { return Vec::new(); }
                 let cs = Span::new(c as f64, c as f64 + 1.0).intersect(span);
                 if cs.is_empty() {
                     continue;
                 }
                 let source = if cycle_rand(c) < *prob { step } else { kid };
-                for mut h in query(source, cs) {
+                for mut h in query_inner(source, cs, budget) {
                     h.part = h.part.intersect(cs);
                     if !h.part.is_empty() && !h.whole.is_empty() {
                         out.push(h);
@@ -182,13 +241,14 @@ pub fn query(pat: &Pat, span: Span) -> Vec<Hap> {
         Pat::Rev(kid) => {
             let mut out = Vec::new();
             for c in span.cycles() {
+                if !budget.spend(1) { return Vec::new(); }
                 let base = c as f64;
                 let local = Span::new(base, base + 1.0).intersect(span);
                 if local.is_empty() {
                     continue;
                 }
                 let mirrored = Span::new(base + 1.0 - local.end, base + 1.0 - local.start);
-                for mut h in query(kid, mirrored) {
+                for mut h in query_inner(kid, mirrored, budget) {
                     h.whole = Span::new(base + 1.0 - h.whole.end, base + 1.0 - h.whole.start);
                     h.part = Span::new(base + 1.0 - h.part.end, base + 1.0 - h.part.start)
                         .intersect(local);
@@ -207,12 +267,13 @@ pub fn query(pat: &Pat, span: Span) -> Vec<Hap> {
             let n = kids.len() as i64;
             let mut out = Vec::new();
             for c in span.cycles() {
+                if !budget.spend(1) { return Vec::new(); }
                 let cs = Span::new(c as f64, c as f64 + 1.0).intersect(span);
                 if cs.is_empty() {
                     continue;
                 }
                 let idx = c.rem_euclid(n) as usize;
-                for mut h in query(&kids[idx], cs) {
+                for mut h in query_inner(&kids[idx], cs, budget) {
                     h.part = h.part.intersect(cs);
                     if !h.part.is_empty() && !h.whole.is_empty() {
                         out.push(h);
@@ -229,8 +290,10 @@ pub fn query(pat: &Pat, span: Span) -> Vec<Hap> {
             let n = mask.len() as f64;
             let mut out = Vec::new();
             for c in span.cycles() {
+                if !budget.spend(1) { return Vec::new(); }
                 let base = c as f64;
                 for (i, hit) in mask.iter().enumerate() {
+                    if !budget.spend(1) { return Vec::new(); }
                     if !hit {
                         continue;
                     }
@@ -239,7 +302,7 @@ pub fn query(pat: &Pat, span: Span) -> Vec<Hap> {
                     if q.is_empty() {
                         continue;
                     }
-                    for mut h in query(child, q) {
+                    for mut h in query_inner(child, q, budget) {
                         h.whole = h.whole.intersect(slot);
                         h.part = h.part.intersect(q);
                         if !h.whole.is_empty() && !h.part.is_empty() {
@@ -252,7 +315,7 @@ pub fn query(pat: &Pat, span: Span) -> Vec<Hap> {
         }
 
         Pat::Shift(d, kid) => {
-            query(kid, Span::new(span.start - d, span.end - d))
+            query_inner(kid, Span::new(span.start - d, span.end - d), budget)
                 .into_iter()
                 .map(|mut h| {
                     h.whole = Span::new(h.whole.start + d, h.whole.end + d);
@@ -263,7 +326,7 @@ pub fn query(pat: &Pat, span: Span) -> Vec<Hap> {
         }
 
         Pat::SetCtl(slot, v, kid) => {
-            query(kid, span)
+            query_inner(kid, span, budget)
                 .into_iter()
                 .map(|mut h| {
                     h.ctl[*slot] = *v;
@@ -273,7 +336,7 @@ pub fn query(pat: &Pat, span: Span) -> Vec<Hap> {
         }
 
         Pat::SetSound(s, kid) => {
-            query(kid, span)
+            query_inner(kid, span, budget)
                 .into_iter()
                 .map(|mut h| {
                     h.sound = s.clone();
@@ -284,7 +347,7 @@ pub fn query(pat: &Pat, span: Span) -> Vec<Hap> {
 
         Pat::AddCtl(slot, delta, kid) => {
             let (base_default, delta) = (*slot, *delta);
-            query(kid, span)
+            query_inner(kid, span, budget)
                 .into_iter()
                 .map(|mut h| {
                     let base = if h.ctl[base_default].is_finite() {
@@ -303,16 +366,18 @@ pub fn query(pat: &Pat, span: Span) -> Vec<Hap> {
             let nf = n as f64;
             let mut out = Vec::new();
             for c in span.cycles() {
+                if !budget.spend(1) { return Vec::new(); }
                 let base = c as f64;
                 let idx = c.rem_euclid(n);
                 for i in 0..n {
+                    if !budget.spend(1) { return Vec::new(); }
                     let slot = Span::new(base + i as f64 / nf, base + (i + 1) as f64 / nf);
                     let q = slot.intersect(span);
                     if q.is_empty() {
                         continue;
                     }
                     let src = if i == idx { step } else { kid };
-                    for mut h in query(src, q) {
+                    for mut h in query_inner(src, q, budget) {
                         h.whole = h.whole.intersect(slot);
                         h.part = h.part.intersect(q);
                         if !h.whole.is_empty() && !h.part.is_empty() {
@@ -323,7 +388,9 @@ pub fn query(pat: &Pat, span: Span) -> Vec<Hap> {
             }
             out
         }
-    }
+    };
+    if !budget.spend(result.len()) { return Vec::new(); }
+    result
 }
 
 #[cfg(test)]

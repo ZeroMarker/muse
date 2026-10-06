@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Pattern, euclid, fast, note, stack, toPattern, transpose } from "../src/dsl";
+import { Pattern, euclid, fast, slow, note, stack, toPattern, transpose } from "../src/dsl";
 import type { Pat } from "../src/ir";
 
 describe("dsl", () => {
@@ -16,6 +16,13 @@ describe("dsl", () => {
     expect(p.pat.t).toBe("overlay");
     const inner = (p.pat as { kids: Pat[] }).kids[1];
     expect(inner.t).toBe("fast");
+  });
+
+  it("rejects invalid time factors instead of silently changing their meaning", () => {
+    for (const factor of [0, -1, NaN, Infinity]) {
+      expect(() => fast(factor, "bd")).toThrow(/finite and positive/);
+      expect(() => slow(factor, "bd")).toThrow(/finite and positive/);
+    }
   });
 
   it("euclid(3,8) produces x..x..x. style masks", () => {

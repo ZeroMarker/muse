@@ -2,11 +2,10 @@ import "./styles.css";
 
 import { readSamples, saveSample, deleteSample } from "./sample-store";
 import { engine } from "./audio/engine";
-import { evaluate } from "./repl";
+import { evaluateAsync } from "./evaluator";
 import { EXAMPLES, DEFAULT_EXAMPLE } from "./examples";
 import { EXPORT_FORMATS, parseExportFormat } from "./export-formats";
 import ExportWorker from "./audio/export-worker?worker";
-import { createEditor, showEditorError } from "./ui/editor";
 import { Visualizer } from "./ui/visualizer";
 
 const PREVIOUS_DEFAULT = `// muse — live-coded music · ctrl+enter runs the editor
@@ -71,7 +70,7 @@ engine.hooks = {
     if (info.playing) {
       const bar = Math.floor(info.cycle);
       const beat = (info.cycle - bar).toFixed(2).slice(2);
-      pos.textContent = `${bar}.${beat} · ${Math.round(info.cps * 60)} bpm`;
+      pos.textContent = `${bar}.${beat} · ${Math.round(info.cps * 60)} cycles/min`;
       pos.classList.add("live");
     } else {
       pos.textContent = "stopped";
@@ -103,6 +102,9 @@ function readDraft(key: string): string | null {
 }
 const savedDraft = readDraft(DRAFT_KEY);
 const initialCode = savedDraft === null || savedDraft === PREVIOUS_DEFAULT ? DEFAULT_EXAMPLE : savedDraft;
+$("editor").textContent = "loading editor…";
+const { createEditor, showEditorError } = await import("./ui/editor");
+$("editor").textContent = "";
 const editor = createEditor($("editor"), initialCode);
 function saveDraft(): void {
   try {
@@ -200,56 +202,90 @@ const updateExportLabel = () => {
   $("export").textContent = "download " + EXPORT_FORMATS[parseExportFormat(exportFormat.value)].label;
 };
 exportFormat.addEventListener("change", updateExportLabel);
-$<HTMLButtonElement>("export").addEventListener("click", async () => {
-  await samplesReady;
-  if ($<HTMLButtonElement>("export").disabled) return;
-  const result = evaluate(editor.getValue());
-  if (!result.ok) { showEditorError(editor, result); log(result.error, "error"); return; }
+const exportButton = $<HTMLButtonElement>("export");
+const cancelExportButton = $<HTMLButtonElement>("cancel-export");
+let cancelExport: (() => void) | null = null;
+cancelExportButton.addEventListener("click", () => cancelExport?.());
+exportButton.addEventListener("click", async () => {
+  if (exportButton.disabled) return;
   const seconds = Number($<HTMLInputElement>("export-seconds").value);
   if (!Number.isFinite(seconds) || seconds < 1 || seconds > 300) { log("export duration must be 1–300 seconds", "error"); return; }
-  const button = $<HTMLButtonElement>("export");
   const format = parseExportFormat(exportFormat.value);
+  const code = editor.getValue();
+  const cps = engine.cps;
+  const controller = new AbortController();
+  let worker: Worker | null = null;
+  let finished = false;
+  exportButton.disabled = true;
   exportFormat.disabled = true;
-  button.disabled = true;
-  button.textContent = "rendering…";
-  const worker = new ExportWorker();
-  const finish = () => { worker.terminate(); button.disabled = false; exportFormat.disabled = false; updateExportLabel(); };
-  worker.onerror = (event) => { log(event.message, "error"); finish(); };
-  worker.onmessage = (event) => {
-    if (event.data.phase) { button.textContent = event.data.phase; return; }
-    if (event.data.error) log(event.data.error, "error");
-    else {
-      const url = URL.createObjectURL(new Blob([event.data.bytes], { type: event.data.mime }));
-      const link = document.createElement("a");
-      link.href = url; link.download = "muse." + event.data.extension; link.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-      log(`exported ${seconds}s ${EXPORT_FORMATS[format].label}`, "ok");
-    }
-    finish();
+  cancelExportButton.disabled = false;
+  exportButton.textContent = "evaluating…";
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(timeout);
+    controller.abort();
+    worker?.terminate();
+    cancelExport = null;
+    exportButton.disabled = false;
+    exportFormat.disabled = false;
+    cancelExportButton.disabled = true;
+    updateExportLabel();
   };
-  worker.postMessage({ pat: result.pattern.pat, seconds, cps: engine.cps,
-    format, baseURL: document.baseURI, wasmUrl: new URL("muse_core.wasm", document.baseURI).href, samples: [...engine.samples] });
+  const timeout = setTimeout(() => { log("export timed out; shorten the duration or simplify the pattern", "error"); finish(); }, 600_000);
+  cancelExport = () => { log("export cancelled"); finish(); };
+  try {
+    await samplesReady;
+    if (finished) return;
+    const result = await evaluateAsync(code, controller.signal);
+    if (finished) return;
+    if (!result.ok) { showEditorError(editor, result); log(result.error, "error"); finish(); return; }
+    showEditorError(editor);
+    exportButton.textContent = "rendering 0%";
+    worker = new ExportWorker();
+    worker.onerror = (event) => { event.preventDefault(); log(event.message, "error"); finish(); };
+    worker.onmessageerror = () => { log("could not receive exported audio", "error"); finish(); };
+    worker.onmessage = (event) => {
+      if (finished) return;
+      if (event.data.phase) { exportButton.textContent = event.data.phase; return; }
+      if (event.data.error) log(event.data.error, "error");
+      else {
+        const url = URL.createObjectURL(new Blob([event.data.bytes], { type: event.data.mime }));
+        const link = document.createElement("a");
+        link.href = url; link.download = "muse." + event.data.extension; link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        log(`exported ${seconds}s ${EXPORT_FORMATS[format].label}`, "ok");
+      }
+      finish();
+    };
+    worker.postMessage({ pat: result.pattern.pat, seconds, cps,
+      format, baseURL: document.baseURI, wasmUrl: new URL("muse_core.wasm", document.baseURI).href, samples: [...engine.samples] });
+  } catch (error) { if (!finished) { log(String(error), "error"); finish(); } }
 });
 
 let everEvaluated = false;
 let running = false;
 let transportVersion = 0;
+let runEvaluation: AbortController | null = null;
 
 async function run(): Promise<void> {
   if (running) return;
   const code = editor.getValue();
   const t0 = performance.now();
-  const res = evaluate(code);
-  if (!res.ok) {
-    showEditorError(editor, res);
-    log(`✗ ${res.error}${res.line ? ` (${res.line}:${res.column})` : ""}`, "error");
-    editor.focus();
-    return;
-  }
-  showEditorError(editor);
   running = true;
+  const controller = new AbortController();
+  runEvaluation = controller;
   const version = ++transportVersion;
   try {
+    const res = await evaluateAsync(code, controller.signal);
+    if (version !== transportVersion) return;
+    if (!res.ok) {
+      showEditorError(editor, res);
+      log(`✗ ${res.error}${res.line ? ` (${res.line}:${res.column})` : ""}`, "error");
+      editor.focus();
+      return;
+    }
+    showEditorError(editor);
     await samplesReady;
     await engine.initIfNeeded();
     if (version !== transportVersion) return;
@@ -264,7 +300,9 @@ async function run(): Promise<void> {
     if (lastVisual) viz.draw(lastVisual.evs, lastVisual.lo, lastVisual.hi, lastVisual.pos, engine.cps);
   } catch (e) {
     log(`✗ ${e instanceof Error ? e.message : String(e)}`, "error");
-  } finally { running = false; }
+  } finally {
+    if (runEvaluation === controller) { runEvaluation = null; running = false; }
+  }
 }
 
 async function play(): Promise<void> {
@@ -283,6 +321,9 @@ async function play(): Promise<void> {
 
 function stop(): void {
   transportVersion++;
+  runEvaluation?.abort();
+  runEvaluation = null;
+  running = false;
   engine.stop();
   viz.clear();
   log("■ stopped");
@@ -319,12 +360,15 @@ window.addEventListener("keydown", (e) => {
 // debug handle (console access): __muse.engine, __muse.evaluate
 declare global {
   interface Window {
-    __muse: { engine: typeof engine; evaluate: typeof evaluate };
+    __muse: { engine: typeof engine; evaluate: typeof evaluateAsync };
   }
 }
-window.__muse = { engine, evaluate };
+window.__muse = { engine, evaluate: evaluateAsync };
 
 log("muse · ctrl+enter = run · ctrl+. = stop");
 log('mini-notation: "bd [hh hh] <sn cp>" · funcs: stack fast slow every rev euclid note gain …');
 setStatus(false);
+for (const id of ["run", "play", "stop", "export", "example", "sample-file"]) {
+  $<HTMLButtonElement | HTMLInputElement | HTMLSelectElement>(id).disabled = false;
+}
 editor.focus();
