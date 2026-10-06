@@ -48,7 +48,8 @@ class Parser {
   }
 
   /** Parse items until `closer` (or end of input). */
-  private seq(closer: string | null): Pat[] {
+  private seq(closer: string | null, depth = 0): Pat[] {
+    if (depth > 64) throw new SyntaxError("mini-notation nesting too deep");
     const items: Pat[] = [];
     for (;;) {
       this.skipWs();
@@ -61,14 +62,15 @@ class Parser {
         this.pos++;
         break;
       }
+      if (["]", ")", ">"].includes(ch)) throw new SyntaxError(`unexpected '${ch}' at character ${this.pos + 1}`);
       if (ch === "." || ch === "~") {
         this.pos++;
-        items.push(rest);
+        items.push(this.postfix(rest));
         continue;
       }
       if (GROUP_START.has(ch)) {
         this.pos++;
-        items.push(this.group(ch));
+        items.push(this.group(ch, depth + 1));
         continue;
       }
       items.push(this.token());
@@ -76,8 +78,8 @@ class Parser {
     return items;
   }
 
-  private group(open: string): Pat {
-    const kids = this.seq(CLOSERS[open]);
+  private group(open: string, depth: number): Pat {
+    const kids = this.seq(CLOSERS[open], depth);
     let inner: Pat;
     if (kids.length === 0) inner = rest;
     else if (open === "(") inner = { t: "overlay", kids };
@@ -88,12 +90,19 @@ class Parser {
 
   private token(): Pat {
     const start = this.pos;
-    while (this.pos < this.src.length && !TOKEN_STOP.has(this.src[this.pos])) this.pos++;
+    while (this.pos < this.src.length) {
+      const ch = this.src[this.pos];
+      if (ch === "." && /^-?\d+$/.test(this.src.slice(start, this.pos)) && /[0-9]/.test(this.src[this.pos + 1] ?? "")) {
+        this.pos++;
+        while (/[0-9]/.test(this.src[this.pos] ?? "")) this.pos++;
+        break;
+      }
+      if (TOKEN_STOP.has(ch) || /\s/.test(ch)) break;
+      this.pos++;
+    }
     const tok = this.src.slice(start, this.pos);
     if (tok === "") {
-      // stray stop-char (e.g. a lone '*') — consume and ignore
-      this.pos++;
-      return rest;
+      throw new SyntaxError(`unexpected '${this.src[this.pos]}' at character ${this.pos + 1}`);
     }
     return this.postfix(tokenToPat(tok));
   }
@@ -104,15 +113,14 @@ class Parser {
     for (;;) {
       const ch = this.src[this.pos];
       if (ch !== "*" && ch !== "/") return p;
-      const save = this.pos;
+      const operator = this.pos;
       this.pos++;
       const start = this.pos;
       while (this.pos < this.src.length && /[0-9.]/.test(this.src[this.pos])) this.pos++;
       const numStr = this.src.slice(start, this.pos);
       const num = Number(numStr);
-      if (!numStr || !Number.isFinite(num) || num <= 0) {
-        this.pos = save; // not a postfix after all
-        return p;
+      if (!/^([0-9]+(\.[0-9]+)?|\.[0-9]+)$/.test(numStr) || !Number.isFinite(num) || num <= 0 || !Number.isFinite(1 / num)) {
+        throw new SyntaxError(`invalid '${ch}' factor at character ${operator + 1}`);
       }
       p = { t: "fast", k: ch === "*" ? num : 1 / num, kid: p };
     }

@@ -78,6 +78,21 @@ describe("mini-notation", () => {
     expect((p.kids[0] as { ctl: (number | null)[] }).ctl[0]).toBe(60);
   });
 
+  it("preserves fractional MIDI pitches and Unicode whitespace", () => {
+    const notes = as(mini("60.5\u00a0-1.25"), "cat");
+    expect(notes.kids.map((p) => as(p, "atom").ctl[0])).toEqual([60.5, -1.25]);
+    expect(as(mini("bd\u00a0sn"), "cat").kids).toHaveLength(2);
+  });
+
+  it("rejects malformed groups and repetition factors", () => {
+    for (const src of ["bd ]", "[bd)", "bd*", "bd/0", "*2", "bd*1.2.3", "bd/-2"]) {
+      expect(() => mini(src)).toThrow(SyntaxError);
+    }
+    expect(() => mini("[".repeat(66) + "bd" + "]".repeat(66))).toThrow(/nesting too deep/);
+    expect(as(mini("~*2"), "fast").kid.t).toBe("rest");
+    expect(as(mini("bd*1.5"), "fast").k).toBe(1.5);
+  });
+
   it("recurses into nested groups", () => {
     const p = as(mini("bd [sn (hh oh)]"), "cat");
     const g = as(p.kids[1], "cat");

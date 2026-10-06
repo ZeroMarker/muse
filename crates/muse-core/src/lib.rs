@@ -111,7 +111,7 @@ pub unsafe extern "C" fn ir_release(h: i32) {
 
 #[no_mangle]
 pub extern "C" fn sched_new(cps: f64) -> i32 {
-    Box::into_raw(Box::new(sched::Sched::new(if cps > 0.0 { cps } else { 1.0 }))) as i32
+    Box::into_raw(Box::new(sched::Sched::new(if cps.is_finite() && cps > 0.0 { cps } else { 1.0 }))) as i32
 }
 
 /// # Safety
@@ -138,7 +138,7 @@ pub unsafe extern "C" fn sched_clear_pattern(sched_h: i32) {
 /// Change tempo, rebasing the clock at `audio_now` (audio-context seconds).
 #[no_mangle]
 pub unsafe extern "C" fn sched_set_cps(sched_h: i32, cps: f64, audio_now: f64) {
-    if sched_h != 0 && cps > 0.0 {
+    if sched_h != 0 && cps.is_finite() && cps > 0.0 && audio_now.is_finite() {
         (*(sched_h as *mut sched::Sched)).set_cps(cps, audio_now);
     }
 }

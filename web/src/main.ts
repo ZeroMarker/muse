@@ -287,6 +287,7 @@ async function run(): Promise<void> {
     }
     showEditorError(editor);
     await samplesReady;
+    if (version !== transportVersion) return;
     await engine.initIfNeeded();
     if (version !== transportVersion) return;
     engine.setPattern(res.pattern.pat);
@@ -311,8 +312,11 @@ async function play(): Promise<void> {
       await run();
       return;
     }
+    const version = transportVersion;
     await samplesReady;
+    if (version !== transportVersion) return;
     await engine.play();
+    if (version !== transportVersion || !engine.playing) return;
     log("▶ playing", "ok");
   } catch (e) {
     log(`✗ ${e instanceof Error ? e.message : String(e)}`, "error");

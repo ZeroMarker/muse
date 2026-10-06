@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { evaluate } from "../src/repl";
 import { echo, chorus, note, fast, stack } from "../src/dsl";
 import { encodeWav, renderOffline } from "../src/offline";
@@ -86,5 +86,43 @@ describe("bounded audio exports", () => {
     expect(() => validateSampleBudget(samples)).not.toThrow();
     expect(() => validateSampleBudget(samples, "extra", sample)).toThrow(/128 MiB/);
     expect(() => validateSampleBudget(samples, "0", sample)).not.toThrow();
+  });
+});
+
+
+describe("WASM allocation failures", () => {
+  it("releases a sample name if PCM allocation fails", async () => {
+    const core = await loadCore();
+    const allocate = core.allocBytes.bind(core);
+    let allocations = 0;
+    const failing = vi.spyOn(core, "allocBytes").mockImplementation((bytes) => {
+      if (++allocations === 2) throw new Error("allocation failed");
+      return allocate(bytes);
+    });
+    const free = vi.spyOn(core, "free");
+    try {
+      expect(() => core.loadSample(0, "sample", new Float32Array(128), 48000)).toThrow("allocation failed");
+      expect(free).toHaveBeenCalledTimes(1);
+    } finally { failing.mockRestore(); free.mockRestore(); }
+    expect(renderOffline(core, note(60).pat, 0.01, 1)).toHaveLength(960);
+  });
+  it("releases prior rendering buffers when a later allocation fails", async () => {
+    const core = await loadCore();
+    const allocate = core.allocBytes.bind(core);
+    const allocated: { ptr: number; len: number }[] = [];
+    let calls = 0;
+    const failing = vi.spyOn(core, "allocBytes").mockImplementation((bytes) => {
+      if (++calls === 5) throw new Error("allocation failed");
+      const buffer = allocate(bytes);
+      allocated.push(buffer);
+      return buffer;
+    });
+    const free = vi.spyOn(core, "free");
+    try {
+      expect(() => renderOffline(core, note(60).pat, 0.01, 1)).toThrow("allocation failed");
+      expect(free.mock.calls).toHaveLength(allocated.length);
+      for (const { ptr, len } of allocated) expect(free).toHaveBeenCalledWith(ptr, len);
+    } finally { failing.mockRestore(); free.mockRestore(); }
+    expect(renderOffline(core, note(60).pat, 0.01, 1)).toHaveLength(960);
   });
 });

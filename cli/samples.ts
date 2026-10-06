@@ -22,6 +22,7 @@ export function loadSamples(specs: string[]): Map<string, SampleData> {
       throw new Error(`sample decoding failed: ${result.error.message}`);
     }
     if (result.status !== 0) throw new Error(`sample decoding failed: ${result.stderr.toString().trim()}`);
+    validateSampleBudget(samples, name, result.stdout.length);
     const data = new Float32Array(result.stdout.length / 4);
     for (let i = 0; i < data.length; i++) data[i] = result.stdout.readFloatLE(i * 4);
     const sample = { data, rate: 48000 };

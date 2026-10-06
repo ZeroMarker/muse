@@ -17,7 +17,7 @@ export class Pattern {
   }
 
   slow(k: number): Pattern {
-    if (!Number.isFinite(k) || k <= 0) throw new Error("slow factor must be finite and positive");
+    if (!Number.isFinite(k) || k <= 0 || !Number.isFinite(1 / k)) throw new Error("slow factor must be finite and positive");
     return new Pattern({ t: "fast", k: 1 / k, kid: this.pat });
   }
 
@@ -26,22 +26,27 @@ export class Pattern {
   }
 
   every(n: number, f: Transform): Pattern {
+    positiveCount(n, "every interval");
     return new Pattern({ t: "every", n, step: apply(f, this.pat), kid: this.pat });
   }
 
   sometimes(p: number, f: Transform): Pattern {
+    if (!Number.isFinite(p) || p < 0 || p > 1) throw new Error("sometimes probability must be 0–1");
     return new Pattern({ t: "sometimes", p, step: apply(f, this.pat), kid: this.pat });
   }
 
   chunk(n: number, f: Transform): Pattern {
+    positiveCount(n, "chunk count", 4096);
     return new Pattern({ t: "chunk", n, step: apply(f, this.pat), kid: this.pat });
   }
 
   shift(d: number): Pattern {
+    if (!Number.isFinite(d)) throw new Error("shift must be finite");
     return new Pattern({ t: "shift", d, kid: this.pat });
   }
 
   struct(mask: string): Pattern {
+    if (!/^[x.]{1,4096}$/.test(mask)) throw new Error("struct mask must contain 1–4096 x or . characters");
     return new Pattern({ t: "struct", mask, kid: this.pat });
   }
 
@@ -115,6 +120,10 @@ export class Pattern {
 }
 
 export type Transform = Pattern | Pat | ((p: Pattern) => Pattern | Pat) | string;
+
+function positiveCount(value: number, name: string, maximum = Number.MAX_SAFE_INTEGER): void {
+  if (!Number.isSafeInteger(value) || value < 1 || value > maximum) throw new Error(`${name} must be an integer from 1 to ${maximum}`);
+}
 
 function ctlSet(slot: number, v: number, kid: Pat): Pattern {
   return new Pattern({ t: "setctl", slot, v, kid });
@@ -202,12 +211,14 @@ export function struct(mask: string, x: PatLike): Pattern {
 
 /** Euclidean rhythm: k hits distributed over n steps (optional rotation). */
 export function euclid(k: number, n: number, x: PatLike, rot = 0): Pattern {
-  k = Math.max(0, Math.trunc(k));
-  n = Math.max(1, Math.trunc(n));
+  positiveCount(n, "euclid step count", 4096);
+  if (!Number.isSafeInteger(k) || k < 0 || !Number.isSafeInteger(rot)) throw new Error("euclid hits and rotation must be integers; hits must be nonnegative");
+  k = Math.min(k, n);
+  rot = ((rot % n) + n) % n;
   const hits = new Set<number>();
   for (let i = 0; i < k; i++) {
     // ceil distributes evenly with the longest run first: B(3,8) = x..x..x.
-    hits.add((Math.ceil((i * n) / k) + Math.trunc(rot)) % n);
+    hits.add((Math.ceil((i * n) / k) + rot) % n);
   }
   let mask = "";
   for (let i = 0; i < n; i++) mask += hits.has(i) ? "x" : ".";

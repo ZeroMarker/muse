@@ -2,7 +2,7 @@
 
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { loadCore } from "../../cli/core";
 import { Driver } from "../../cli/driver";
@@ -88,6 +88,43 @@ describe("cli offline render (muse run)", () => {
     } finally {
       driver.dispose();
     }
+  });
+
+  it("cleans up failed initialization and permits a fresh start", async () => {
+    const core = await loadCore();
+    const sink = { label: "test", alive: true, write: () => {}, close: () => {} };
+    const driver = new Driver(core, sink, () => {});
+    const allocate = core.allocBytes.bind(core);
+    let allocations = 0;
+    const failing = vi.spyOn(core, "allocBytes").mockImplementation((bytes) => {
+      if (++allocations === 2) throw new Error("allocation failed");
+      return allocate(bytes);
+    });
+    const free = vi.spyOn(core, "free");
+    try {
+      expect(() => driver.start()).toThrow("allocation failed");
+      expect(driver.playing).toBe(false);
+      expect(free).toHaveBeenCalledTimes(1);
+      driver.dispose();
+      expect(free).toHaveBeenCalledTimes(1);
+      failing.mockRestore();
+      driver.start();
+      expect(driver.playing).toBe(true);
+      for (const cps of [0, -1, NaN, Infinity]) expect(() => driver.setCps(cps)).toThrow(/tempo/);
+      expect(driver.cps).toBe(2);
+    } finally { driver.dispose(); failing.mockRestore(); free.mockRestore(); }
+  });
+
+  it("retains the last valid pattern after a rejected replacement", async () => {
+    const core = await loadCore();
+    const driver = new Driver(core, { label: "test", alive: true, write: () => {}, close: () => {} }, () => {});
+    driver.now = () => 0;
+    try {
+      driver.setPattern(fast(4, "bd").pat);
+      expect(() => driver.setPattern({ t: "struct", mask: "x".repeat(4097), kid: silence.pat })).toThrow(/mask/);
+      driver.start();
+      expect(driver.peek(1)).toHaveLength(4);
+    } finally { driver.dispose(); }
   });
 
   it("cancels queued old-pattern notes on a live swap", async () => {

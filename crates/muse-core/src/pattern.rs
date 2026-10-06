@@ -184,7 +184,7 @@ fn query_inner(pat: &Pat, span: Span, budget: &mut Budget) -> Vec<Hap> {
         }
 
         Pat::Fast(k, kid) => {
-            let k = if k.is_finite() && k.abs() > 1e-9 { k.abs() } else { 1.0 };
+            let k = if k.is_finite() && *k > 0.0 { *k } else { 1.0 };
             let inner = Span::new(span.start * k, span.end * k);
             if inner.is_empty() {
                 return Vec::new();
@@ -247,10 +247,10 @@ fn query_inner(pat: &Pat, span: Span, budget: &mut Budget) -> Vec<Hap> {
                 if local.is_empty() {
                     continue;
                 }
-                let mirrored = Span::new(base + 1.0 - local.end, base + 1.0 - local.start);
+                let mirrored = Span::new(2.0 * base + 1.0 - local.end, 2.0 * base + 1.0 - local.start);
                 for mut h in query_inner(kid, mirrored, budget) {
-                    h.whole = Span::new(base + 1.0 - h.whole.end, base + 1.0 - h.whole.start);
-                    h.part = Span::new(base + 1.0 - h.part.end, base + 1.0 - h.part.start)
+                    h.whole = Span::new(2.0 * base + 1.0 - h.whole.end, 2.0 * base + 1.0 - h.whole.start);
+                    h.part = Span::new(2.0 * base + 1.0 - h.part.end, 2.0 * base + 1.0 - h.part.start)
                         .intersect(local);
                     if !h.whole.is_empty() && !h.part.is_empty() {
                         out.push(h);
@@ -476,6 +476,29 @@ mod tests {
         // fast pattern reversed keeps the symmetric onset set {0, .5}
         let p2 = Pat::Rev(Box::new(Pat::Fast(2.0, Box::new(atom("x")))));
         assert_eq!(onsets(&p2, 0.0, 1.0), vec![0.0, 0.5]);
+    }
+
+    #[test]
+    fn rev_preserves_cycle_dependent_content_and_is_an_involution() {
+        let p = Pat::Altern(vec![
+            Pat::Cat(vec![atom("a"), atom("b")]),
+            Pat::Cat(vec![atom("c"), atom("d")]),
+        ]);
+        let reversed = Pat::Rev(Box::new(p.clone()));
+        for cycle in [-3.0, -1.0, 1.0, 3.0] {
+            let events = query(&reversed, Span::new(cycle, cycle + 1.0));
+            assert_eq!(events.iter().map(|h| h.sound.as_str()).collect::<Vec<_>>(), vec!["c", "d"]);
+            assert_eq!(events[0].whole.start, cycle + 0.5);
+            assert_eq!(events[1].whole.start, cycle);
+        }
+        let twice = Pat::Rev(Box::new(reversed));
+        let original = query(&p, Span::new(-2.0, 4.0));
+        let restored = query(&twice, Span::new(-2.0, 4.0));
+        assert_eq!(original.iter().map(|h| (&h.sound, h.whole)).collect::<Vec<_>>(),
+                   restored.iter().map(|h| (&h.sound, h.whole)).collect::<Vec<_>>());
+        let clipped = query(&twice, Span::new(1.25, 1.75));
+        assert_eq!(clipped.iter().map(|h| h.part).collect::<Vec<_>>(),
+                   vec![Span::new(1.25, 1.5), Span::new(1.5, 1.75)]);
     }
 
     #[test]

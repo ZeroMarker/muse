@@ -237,6 +237,12 @@ export function encode(pat: Pat): Uint8Array {
     if ("kid" in node) pending.push([node.kid, depth + 1]);
     if ("step" in node) pending.push([node.step, depth + 1]);
     if ("pitches" in node) pending.push([node.pitches, depth + 1]);
+    if ("mask" in node && (!/^[x.]{1,4096}$/.test(node.mask))) throw new Error("struct mask must contain 1–4096 x or . characters");
+    if ("n" in node && (!Number.isSafeInteger(node.n) || node.n < 1 || (node.t === "chunk" && node.n > 4096))) throw new Error("invalid pattern interval or chunk count");
+    if ("k" in node && (!Number.isFinite(node.k) || node.k <= 0)) throw new Error("fast factor must be finite and positive");
+    if ("p" in node && (!Number.isFinite(node.p) || node.p < 0 || node.p > 1)) throw new Error("sometimes probability must be 0–1");
+    if ("d" in node && !Number.isFinite(node.d)) throw new Error("pattern offset must be finite");
+    if ("slot" in node && (!Number.isInteger(node.slot) || node.slot < 0 || node.slot >= NCTL)) throw new Error("invalid control slot");
     if ("sound" in node && (node.sound.length > 127 || !/^[\x00-\x7f]*$/.test(node.sound))) {
       throw new Error("instrument names must be ASCII and at most 127 characters");
     }

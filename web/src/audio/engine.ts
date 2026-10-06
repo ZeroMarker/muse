@@ -166,9 +166,11 @@ export class Engine {
 
   async loadSample(name: string, file: ArrayBuffer): Promise<void> {
     validateSampleName(name);
+    if (file.byteLength > 50 * 1024 * 1024) throw new Error("audio file must be smaller than 50 MiB");
     await this.initIfNeeded();
     const decoded = await this.ctx!.decodeAudioData(file);
     if (decoded.duration > 30) throw new Error("samples must be at most 30 seconds");
+    validateSampleBudget(this.samples, name, decoded.length * Float32Array.BYTES_PER_ELEMENT);
     const data = new Float32Array(decoded.length);
     for (let channel = 0; channel < decoded.numberOfChannels; channel++) {
       const source = decoded.getChannelData(channel);
@@ -213,6 +215,7 @@ export class Engine {
   }
 
   setCps(cps: number): void {
+    if (!Number.isFinite(cps) || cps <= 0) throw new Error("tempo must be finite and positive");
     this.cps = cps;
     if (this.initialized && this.ctx) {
       this.exports.sched_set_cps(this.sched, cps, this.ctx.currentTime);

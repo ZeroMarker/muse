@@ -63,7 +63,8 @@ export class WasmCore {
     const ptr = this.exports.muse_alloc(len);
     if (!ptr) throw new WasmError("muse_alloc failed");
     if (typeof bytes !== "number") {
-      new Uint8Array(this.exports.memory.buffer, ptr, len).set(bytes);
+      try { new Uint8Array(this.exports.memory.buffer, ptr, len).set(bytes); }
+      catch (error) { this.free(ptr, len); throw error; }
     }
     return { ptr, len };
   }
@@ -96,14 +97,15 @@ export class WasmCore {
 
   loadSample(dsp: number, name: string, data: Float32Array, rate: number): void {
     const nameBytes = this.allocBytes(new TextEncoder().encode(name));
-    const pcm = this.allocBytes(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+    let pcm: { ptr: number; len: number } | undefined;
     try {
+      pcm = this.allocBytes(new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
       if (!this.exports.dsp_load_sample(dsp, nameBytes.ptr, nameBytes.len, pcm.ptr, data.length, rate)) {
         throw new WasmError("sample rejected (ASCII name, mono PCM, maximum 30 seconds)");
       }
     } finally {
       this.free(nameBytes.ptr, nameBytes.len);
-      this.free(pcm.ptr, pcm.len);
+      if (pcm) this.free(pcm.ptr, pcm.len);
     }
   }
 

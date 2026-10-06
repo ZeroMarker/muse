@@ -16,8 +16,9 @@ export function validateSample(name: string, sample: SampleData): void {
 }
 
 /** Limit the source PCM held by a session; playback/export also copy it. */
-export function validateSampleBudget(samples: ReadonlyMap<string, SampleData>, name?: string, sample?: SampleData): void {
-  let bytes = sample?.data.byteLength ?? 0;
+export function validateSampleBudget(samples: ReadonlyMap<string, SampleData>, name?: string, sample?: SampleData | number): void {
+  let bytes = typeof sample === "number" ? sample : sample?.data.byteLength ?? 0;
+  if (!Number.isSafeInteger(bytes) || bytes < 0) throw new Error("invalid sample PCM size");
   for (const [key, value] of samples) if (key !== name) bytes += value.data.byteLength;
   if (bytes > 128 * 1024 * 1024) throw new Error("samples exceed the 128 MiB total PCM limit; delete unused samples");
 }

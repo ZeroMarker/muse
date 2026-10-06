@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import { CTL, EVENT_HEADER, NCTL, encode, unpackEvents } from "../src/ir";
 import { mini } from "../src/mini";
-import { fast, stack, sound, p } from "../src/dsl";
+import { fast, stack, sound, p, slow, rev } from "../src/dsl";
 import { WasmCore } from "../src/wasm";
 
 const WASM_PATH = resolve(process.cwd(), "target/wasm32-unknown-unknown/release/muse_core.wasm");
@@ -225,5 +225,38 @@ describe("pattern limits and pitch chaining", () => {
     expect(() => encode(cyclic)).toThrow(/nesting or node limit/);
     const huge = stack(...Array.from({ length: 32 }, () => stack(...Array(1024).fill("bd"))));
     expect(() => encode(huge.pat)).toThrow(/nesting or node limit/);
+  });
+});
+
+
+describe("cycle-aware reversal and raw input validation", () => {
+  it("reverses each alternate cycle's content through the actual scheduler", async () => {
+    const core = await loadCore();
+    const x = core.exports;
+    const sched = x.sched_new(1);
+    const handle = core.decodePattern(rev("<[bd sn] [hh cp]>").pat);
+    try {
+      x.sched_set_pattern(sched, handle);
+      x.sched_reset(sched, 0);
+      const events = core.queryScheduled(sched, 4);
+      expect(events.map((e) => e.sound)).toEqual(["sn", "bd", "cp", "hh", "sn", "bd", "cp", "hh"]);
+      expect(events.map((e) => e.onsetCycle)).toEqual([0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5]);
+      const long = core.decodePattern(slow(1e10, "sine").pat);
+      try { x.sched_set_pattern(sched, long); } finally { core.releasePattern(long); }
+      x.sched_reset(sched, 0);
+      expect(core.queryScheduled(sched, 0.2).map((e) => e.durSec)).toEqual([1e10]);
+    } finally { x.sched_free(sched); core.releasePattern(handle); }
+  });
+  it("rejects malformed raw nodes before allocating the encoded tree", () => {
+    const kid = mini("bd");
+    for (const pat of [
+      { t: "struct", mask: "x".repeat(4097), kid },
+      { t: "struct", mask: "x~", kid },
+      { t: "setctl", slot: 256, v: 1, kid },
+      { t: "every", n: -1, step: kid, kid },
+      { t: "fast", k: 0, kid },
+      { t: "sometimes", p: NaN, step: kid, kid },
+      { t: "shift", d: Infinity, kid },
+    ] as import("../src/ir").Pat[]) expect(() => encode(pat)).toThrow();
   });
 });

@@ -35,16 +35,22 @@ export function renderOffline(
     const h = x.dsp_new(sampleRate);
     try {
       for (const [name, sample] of samples) core.loadSample(h, name, sample.data, sample.rate);
-      const ctlAlloc = core.allocBytes(NCTL * 8);
-      const sndAlloc = core.allocBytes(128);
-      let eventsTotal = 0;
-      let lastPercent = -1;
-      const totalFrames = Math.ceil(seconds * sampleRate);
-      const out = new Int16Array(totalFrames * 2);
-      const chunk = 256;
-      const lPtr = core.allocBytes(chunk * 4);
-      const rPtr = core.allocBytes(chunk * 4);
+      const allocations: { ptr: number; len: number }[] = [];
+      const allocate = (len: number) => {
+        const allocation = core.allocBytes(len);
+        allocations.push(allocation);
+        return allocation;
+      };
       try {
+        const ctlAlloc = allocate(NCTL * 8);
+        const sndAlloc = allocate(128);
+        let eventsTotal = 0;
+        let lastPercent = -1;
+        const totalFrames = Math.ceil(seconds * sampleRate);
+        const out = new Int16Array(totalFrames * 2);
+        const chunk = 256;
+        const lPtr = allocate(chunk * 4);
+        const rPtr = allocate(chunk * 4);
         for (let frame = 0; frame < totalFrames; frame += chunk) {
           const n = Math.min(chunk, totalFrames - frame);
           const horizon = x.sched_cycle_at(sched, (frame + n) / sampleRate);
@@ -76,13 +82,10 @@ export function renderOffline(
           const percent = Math.floor((frame + n) * 100 / totalFrames);
           if (percent !== lastPercent) { lastPercent = percent; onProgress?.(percent); }
         }
+        return out;
       } finally {
-        core.free(lPtr.ptr, lPtr.len);
-        core.free(rPtr.ptr, rPtr.len);
-        core.free(ctlAlloc.ptr, ctlAlloc.len);
-        core.free(sndAlloc.ptr, sndAlloc.len);
+        for (const { ptr, len } of allocations.reverse()) core.free(ptr, len);
       }
-      return out;
     } finally {
       x.dsp_free(h);
     }

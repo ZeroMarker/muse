@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Pattern, euclid, fast, slow, note, stack, toPattern, transpose } from "../src/dsl";
+import { Pattern, euclid, fast, slow, note, chunk, every, sometimes, shift, struct, rev, stack, toPattern, transpose } from "../src/dsl";
 import type { Pat } from "../src/ir";
 
 describe("dsl", () => {
@@ -34,6 +34,29 @@ describe("dsl", () => {
   it("euclid supports rotation", () => {
     const e = euclid(3, 8, "bd", 1);
     expect((e.pat as { mask: string }).mask).toBe(".x..x..x");
+  });
+
+  it("wraps negative Euclidean rotation and saturates excess hits", () => {
+    const mask = (rotation: number) => (euclid(3, 8, "bd", rotation).pat as { mask: string }).mask;
+    expect(mask(-1)).toBe("..x..x.x");
+    expect(mask(-1)).toBe(mask(7));
+    expect(mask(-17)).toBe(mask(-1));
+    expect((euclid(100, 8, "bd").pat as { mask: string }).mask).toBe("xxxxxxxx");
+    expect((euclid(0, 8, "bd").pat as { mask: string }).mask).toBe("........");
+  });
+
+  it("rejects invalid rhythmic counts, masks, offsets and probabilities", () => {
+    for (const value of [0, -1, 1.5, Infinity, NaN]) {
+      expect(() => every(value, rev, "bd")).toThrow(/interval/);
+      expect(() => chunk(value, rev, "bd")).toThrow(/count/);
+      expect(() => euclid(3, value, "bd")).toThrow(/step count/);
+    }
+    expect(() => chunk(4097, rev, "bd")).toThrow();
+    expect(() => euclid(-1, 8, "bd")).toThrow();
+    expect(() => euclid(3, 8, "bd", 0.5)).toThrow();
+    for (const value of [NaN, Infinity, -0.1, 1.1]) expect(() => sometimes(value, rev, "bd")).toThrow(/probability/);
+    expect(() => shift(NaN, "bd")).toThrow(/finite/);
+    for (const mask of ["", "x~x", "x".repeat(4097)]) expect(() => struct(mask, "bd")).toThrow(/mask/);
   });
 
   it("every carries its step transform", () => {

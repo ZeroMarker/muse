@@ -57,15 +57,17 @@ export class Driver {
   start(): void {
     if (!this.dsp) {
       const x = this.x;
-      this.sched = x.sched_new(this.cps);
-      this.dsp = x.dsp_new(48000);
-      for (const [name, sample] of this.samples) this.core.loadSample(this.dsp, name, sample.data, sample.rate);
-      this.ctlPtr = x.muse_alloc(NCTL * 8);
-      this.sndPtr = x.muse_alloc(128);
-      this.lPtr = x.muse_alloc(CHUNK * 4);
-      this.rPtr = x.muse_alloc(CHUNK * 4);
-      if (this.pattern) this.install(this.pattern);
-      this.renderLoop();
+      try {
+        this.sched = x.sched_new(this.cps);
+        this.dsp = x.dsp_new(48000);
+        for (const [name, sample] of this.samples) this.core.loadSample(this.dsp, name, sample.data, sample.rate);
+        this.ctlPtr = this.core.allocBytes(NCTL * 8).ptr;
+        this.sndPtr = this.core.allocBytes(128).ptr;
+        this.lPtr = this.core.allocBytes(CHUNK * 4).ptr;
+        this.rPtr = this.core.allocBytes(CHUNK * 4).ptr;
+        if (this.pattern) this.install(this.pattern);
+        this.renderLoop();
+      } catch (error) { this.dispose(); throw error; }
     }
     if (!this.sched) return;
     this.rendered = Math.floor(this.now() * 48000);
@@ -88,6 +90,7 @@ export class Driver {
   }
 
   setCps(cps: number): void {
+    if (!Number.isFinite(cps) || cps <= 0) throw new Error("tempo must be finite and positive");
     this.cps = cps;
     if (this.sched) this.x.sched_set_cps(this.sched, cps, this.now());
     if (this.playing) this.reschedule();
@@ -95,9 +98,12 @@ export class Driver {
 
   /** Hot-swap the playing pattern (starts the engine on first use). */
   setPattern(pat: Pat): void {
+    if (this.sched) this.install(pat);
+    else {
+      const handle = this.core.decodePattern(pat);
+      this.core.releasePattern(handle);
+    }
     this.pattern = pat;
-    if (!this.sched) return;
-    this.install(pat);
     if (this.playing) this.reschedule();
   }
 
@@ -186,6 +192,7 @@ export class Driver {
           this.rendered += n;
         }
       } catch (e) {
+        this.stop();
         this.log(`render error: ${String(e)}`);
       }
     };
@@ -210,6 +217,9 @@ export class Driver {
     if (this.sndPtr) this.core.free(this.sndPtr, 128);
     if (this.lPtr) this.core.free(this.lPtr, CHUNK * 4);
     if (this.rPtr) this.core.free(this.rPtr, CHUNK * 4);
+    this.ctlPtr = this.sndPtr = this.lPtr = this.rPtr = 0;
+    this.overloads = 0;
+    this.lastOverloadLog = -Infinity;
   }
 }
 

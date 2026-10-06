@@ -302,6 +302,12 @@ try {
     await resiliencePage.click("#run");
     await resiliencePage.waitForFunction(() => window.__muse.engine.playing && window.__muse.engine.peak > 0.005);
     check(true, "Stop cancels evaluation and a fresh Run plays successfully");
+    await resiliencePage.evaluate(() => {
+      document.getElementById("play").click();
+      document.getElementById("stop").click();
+    });
+    await sleep(100);
+    check(await resiliencePage.evaluate(() => !window.__muse.engine.playing), "Stop supersedes a Play waiting for restored samples");
     await resiliencePage.click("#stop");
     await setCode("while (true) {}\n note(60)");
     await resiliencePage.click("#export");

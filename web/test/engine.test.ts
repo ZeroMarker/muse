@@ -68,6 +68,25 @@ describe("audio initialization", () => {
     mocks.nodes[0].dispatchEvent(new Event("processorerror"));
     expect(engine.audioReady).toBe(true);
   });
+  it("checks the sample budget before allocating and mixing mono PCM", async () => {
+    audioMocks();
+    const engine = new Engine();
+    engine.initIfNeeded = () => engine.init("processor", "wasm");
+    await engine.initIfNeeded();
+    const sample = { data: new Float32Array(1024 * 1024), rate: 48000 };
+    for (let i = 0; i < 32; i++) engine.registerSample("s" + i, sample);
+    const getChannelData = vi.fn();
+    engine.ctx!.decodeAudioData = vi.fn(async () => ({ duration: 0.1, length: 4800, numberOfChannels: 2, sampleRate: 48000, getChannelData } as unknown as AudioBuffer));
+    await expect(engine.loadSample("extra", new ArrayBuffer(8))).rejects.toThrow(/128 MiB/);
+    expect(getChannelData).not.toHaveBeenCalled();
+    expect(engine.samples.size).toBe(32);
+  });
+  it("rejects nonfinite tempos without changing the clock", () => {
+    const engine = new Engine();
+    engine.setCps(2);
+    for (const cps of [0, -1, NaN, Infinity]) expect(() => engine.setCps(cps)).toThrow(/tempo/);
+    expect(engine.cps).toBe(2);
+  });
   it("shares a single initialization across simultaneous calls", async () => {
     const mocks = audioMocks();
     const engine = new Engine();

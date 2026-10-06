@@ -360,6 +360,14 @@ const bass = note("c2 . . c2 . g1 . .").gain(0.75).cutoff(500);
 stack(drums, bass).delay(0.3)
 ```
 
+Mini-notation accepts fractional MIDI pitches such as `"60.5 62.25"`.
+Unmatched closing brackets, incomplete repeats, and nonpositive repeat factors
+are errors. Masks contain only `x` (hit) and `.` (rest), with 1–4096 characters.
+`every` uses a positive integer interval; `chunk` and Euclidean rhythms allow
+1–4096 slots. Euclidean negative rotations wrap around the cycle, and hits
+above the slot count produce a hit in every slot. `rev` preserves the content
+of the current cycle, including alternation and cycle-dependent transforms.
+
 Chained `.note("c3 e3")` samples pitches at the existing pattern's event
 onsets, preserving its rhythm, instrument, and controls. Pitch-pattern rests
 mute matching events; chords produce simultaneous pitches. For example,
