@@ -70,8 +70,8 @@ new release and switch the symlink atomically:
 muse_release_tag=$(date -u +%Y%m%dT%H%M%SZ)
 muse_release_dir="/srv/muse/releases/$muse_release_tag"
 sudo install -d -m 755 "$muse_release_dir/assets"
-sudo cp dist/index.html dist/muse_core.wasm "$muse_release_dir/"
-sudo cp -r dist/assets/. "$muse_release_dir/assets/"
+sudo cp dist/web/index.html dist/web/muse_core.wasm "$muse_release_dir/"
+sudo cp -r dist/web/assets/. "$muse_release_dir/assets/"
 sudo chmod -R a+rX "$muse_release_dir"
 sudo ln -s "$muse_release_dir" /srv/muse/current.next
 sudo mv -Tf /srv/muse/current.next /srv/muse/current

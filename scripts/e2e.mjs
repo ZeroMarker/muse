@@ -1,4 +1,4 @@
-// End-to-end smoke test: serves dist/, opens the app in headless Chromium,
+// End-to-end smoke test: serves dist/web/, opens the app in headless Chromium,
 // runs the editor and verifies the full pipeline:
 //   Monaco → REPL → IR encode → wasm decode/scheduler → worklet DSP → meter.
 //
@@ -13,11 +13,11 @@ import { extname, join, normalize } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { chromium } from "playwright";
 
-const ROOT = new URL("../dist", import.meta.url).pathname;
+const ROOT = new URL("../dist/web", import.meta.url).pathname;
 const PORT = 4319;
 
 if (!existsSync(join(ROOT, "index.html"))) {
-  console.error("dist/ not built — run: npm run build");
+  console.error("dist/web/ not built — run: npm run build");
   process.exit(1);
 }
 

@@ -4,7 +4,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-[ -f web/public/muse_core.wasm ] || bash scripts/build-wasm.sh
+# Cargo rebuilds incrementally so the bundle always contains the current core.
+bash scripts/build-wasm.sh
 
 mkdir -p dist/cli
 npx esbuild cli/index.ts \

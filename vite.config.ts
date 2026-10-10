@@ -4,7 +4,7 @@ export default defineConfig({
   root: "web",
   base: "./",
   build: {
-    outDir: "../dist",
+    outDir: "../dist/web",
     emptyOutDir: true,
     target: "es2022",
     sourcemap: true,

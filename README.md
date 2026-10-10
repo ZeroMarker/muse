@@ -232,9 +232,10 @@ be fractional, and BPM must be finite and positive. The REPL `:bpm` command
 accepts 20–300 BPM and rejects invalid values without changing tempo.
 
 
-Web builds replace `dist/`, including any earlier CLI bundle. After a web
-build, use `./muse` or run `npm run build:cli` before invoking the bundle directly
-or a globally linked `muse` command.
+Web builds write to `dist/web/`; CLI builds write to `dist/cli/`. Building the
+web app preserves the CLI bundle. Every CLI build first updates the Rust/WASM
+core using Cargo’s incremental build, then embeds it in the bundle. After
+changing source code, run `npm run build:cli` to refresh an existing CLI bundle.
 
 ## Validation
 
@@ -249,7 +250,7 @@ npx playwright install --with-deps chromium
 ```sh
 npm test             # Rust + TypeScript tests + wasm build
 npm run cli:test     # CLI smoke test (help/run/repl, wav roundtrip)
-npm run build        # production build → dist/
+npm run build        # production build → dist/web/
 node scripts/e2e.mjs # headless-Chromium end-to-end test (needs `npm run build`)
 npm run verify       # everything above, in order
 ```
