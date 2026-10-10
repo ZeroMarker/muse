@@ -296,7 +296,8 @@ memory — events cross the port as plain objects `{t, d, c, s}`.
 - **Lookahead scheduling.** Every 60 ms the engine asks Rust for events in
   `[cursor, now+300ms)`, converts onsets to absolute audio time and posts them
   to the worklet. The cursor only moves forward, so every onset is scheduled
-  exactly once.
+  exactly once. Visualization queries run every 120 ms while the page is visible,
+  reuse a WASM buffer, and refresh immediately on pattern or tempo changes.
 - **The worklet has no `fetch` and no `TextEncoder`** (AudioWorkletGlobalScope
   is minimal) — the main thread downloads the wasm and ships the bytes over
   the port; instrument names are written as raw ASCII bytes.

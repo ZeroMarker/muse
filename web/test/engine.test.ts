@@ -3,7 +3,7 @@ import { Engine } from "../src/audio/engine";
 import { atom } from "../src/ir";
 import { WasmCore } from "../src/wasm";
 
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 function audioMocks(failFirst = false) {
   let contexts = 0;
@@ -12,13 +12,20 @@ function audioMocks(failFirst = false) {
   const nodes: EventTarget[] = [];
   const schedFree = vi.fn();
   const setPattern = vi.fn(() => 1);
+  const peek = vi.fn(() => 0);
+  const alloc = vi.fn(() => 1024);
+  const free = vi.fn();
   vi.spyOn(WasmCore, "fetchBytes").mockResolvedValue(new ArrayBuffer(8));
   vi.spyOn(WebAssembly, "instantiate").mockResolvedValue({
     instance: { exports: { sched_new: () => 1, sched_free: schedFree, sched_set_pattern: setPattern,
-      memory: new WebAssembly.Memory({ initial: 1 }), muse_alloc: () => 1024, muse_free: () => {},
+      memory: new WebAssembly.Memory({ initial: 4 }), muse_alloc: alloc, muse_free: free,
+      sched_reset: () => {}, sched_set_cps: () => {}, sched_cycle_at: (_h: number, t: number) => t,
+      sched_peek: peek,
       ir_decode: () => 1, ir_release: () => {} } },
   } as unknown as WebAssembly.Instance);
   vi.stubGlobal("AudioContext", class {
+    currentTime = 0;
+    resume = async () => {};
     sampleRate = 48000;
     baseLatency = 0.01;
     close = close;
@@ -33,7 +40,7 @@ function audioMocks(failFirst = false) {
     connect() {}
     disconnect = disconnect;
   });
-  return { count: () => contexts, close, disconnect, nodes, schedFree, setPattern };
+  return { count: () => contexts, close, disconnect, nodes, schedFree, setPattern, peek, alloc, free };
 }
 
 describe("audio initialization", () => {
@@ -104,5 +111,73 @@ describe("audio initialization", () => {
     await engine.init("processor", "wasm");
     expect(mocks.count()).toBe(2);
     expect(engine.audioReady).toBe(true);
+  });
+});
+
+
+describe("visualization scheduling", () => {
+  async function setup() {
+    const mocks = audioMocks();
+    const scheduled = vi.spyOn(WasmCore.prototype, "queryScheduled").mockReturnValue([]);
+    const visualize = vi.fn();
+    const engine = new Engine();
+    engine.hooks.onVisualize = visualize;
+    await engine.init("processor", "wasm");
+    vi.useFakeTimers();
+    await engine.play();
+    const advance = (time: number) => {
+      Object.defineProperty(engine.ctx!, "currentTime", { value: time, configurable: true });
+      vi.advanceTimersByTime(60);
+    };
+    return { engine, mocks, scheduled, visualize, advance };
+  }
+
+  it("keeps audio ticks at 60 ms while halving visual queries and reusing the buffer", async () => {
+    const { engine, mocks, scheduled, visualize, advance } = await setup();
+    try {
+      for (let i = 1; i <= 10; i++) advance(i * 0.06);
+      expect(scheduled).toHaveBeenCalledTimes(11);
+      expect(mocks.peek).toHaveBeenCalledTimes(6);
+      expect(visualize).toHaveBeenCalledTimes(6);
+      expect(mocks.alloc).toHaveBeenCalledTimes(1);
+      expect(mocks.free).not.toHaveBeenCalled();
+      engine.setCps(2);
+      expect(mocks.peek).toHaveBeenCalledTimes(7);
+      engine.setPattern(atom("bd"));
+      expect(mocks.peek).toHaveBeenCalledTimes(8);
+    } finally { engine.stop(); }
+  });
+
+  it("skips hidden or unobserved visualizations while audio scheduling continues", async () => {
+    const { engine, mocks, scheduled, advance } = await setup();
+    try {
+      const page = { hidden: true };
+      vi.stubGlobal("document", page);
+      advance(0.12);
+      advance(0.24);
+      expect(mocks.peek).toHaveBeenCalledTimes(1);
+      page.hidden = false;
+      advance(0.30);
+      expect(mocks.peek).toHaveBeenCalledTimes(2);
+      engine.hooks.onVisualize = undefined;
+      advance(0.42);
+      expect(mocks.peek).toHaveBeenCalledTimes(2);
+      expect(scheduled).toHaveBeenCalledTimes(5);
+    } finally { engine.stop(); }
+  });
+
+  it("releases the visual buffer on processor failure and allocates a fresh one on recovery", async () => {
+    const { engine, mocks } = await setup();
+    try {
+      mocks.nodes[0].dispatchEvent(new Event("processorerror"));
+      expect(mocks.free).toHaveBeenCalledExactlyOnceWith(1024, 128 * 1024);
+      vi.useRealTimers();
+      await engine.init("processor", "wasm");
+      vi.useFakeTimers();
+      await engine.play();
+      expect(mocks.alloc).toHaveBeenCalledTimes(2);
+      expect(mocks.peek).toHaveBeenCalledTimes(2);
+      expect(engine.playing).toBe(true);
+    } finally { engine.stop(); }
   });
 });

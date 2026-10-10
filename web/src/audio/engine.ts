@@ -16,6 +16,8 @@ const TICK_MS = 60;
 export const VIS_CYCLES = 4;
 /** Fixed peek buffer for the visualizer (~700 events). */
 const PEEK_CAP = 128 * 1024;
+/** Visual queries run at half the audio scheduling frequency. */
+const VIS_INTERVAL = 0.12;
 
 export interface TickInfo {
   cycle: number;
@@ -42,6 +44,8 @@ export class Engine {
   private closing: Promise<void> = Promise.resolve();
   private pattern: Pat | null = null;
   private overloads = 0;
+  private peekBuffer: { ptr: number; len: number } | null = null;
+  private nextVisualAt = -Infinity;
 
   readonly samples = new Map<string, SampleData>();
 
@@ -78,6 +82,9 @@ export class Engine {
     this.stop();
     this.node?.disconnect();
     this.node?.port.close();
+    if (this.peekBuffer && this.core) this.core.free(this.peekBuffer.ptr, this.peekBuffer.len);
+    this.peekBuffer = null;
+    this.nextVisualAt = -Infinity;
     if (this.sched && this.core) this.core.exports.sched_free(this.sched);
     const ctx = this.ctx;
     this.sched = 0;
@@ -264,6 +271,7 @@ export class Engine {
     if (!this.ctx || !this.node) return;
     this.node.port.postMessage({ type: "clear_pending" });
     this.exports.sched_reset(this.sched, this.ctx.currentTime + LEAD);
+    this.nextVisualAt = -Infinity;
     this.tick();
   }
 
@@ -278,6 +286,7 @@ export class Engine {
 
   private startTick(): void {
     if (this.timer !== null) return;
+    this.nextVisualAt = -Infinity;
     this.timer = setInterval(() => this.tick(), TICK_MS);
     this.tick();
   }
@@ -310,18 +319,19 @@ export class Engine {
         });
       }
 
-      // visualizer: peek at the next few cycles (does not advance the cursor)
-      const lo = x.sched_cycle_at(this.sched, now + LEAD);
-      const hi = lo + VIS_CYCLES;
-      const pos = x.sched_cycle_at(this.sched, now);
-      const { ptr, len } = this.core!.allocBytes(PEEK_CAP);
-      try {
+      // Keep optional UI work out of every audio tick and hidden tabs.
+      if (this.hooks.onVisualize && !(typeof document !== "undefined" && document.hidden)
+        && now + 1e-6 >= this.nextVisualAt) {
+        this.nextVisualAt = now + VIS_INTERVAL;
+        const lo = x.sched_cycle_at(this.sched, now + LEAD);
+        const hi = lo + VIS_CYCLES;
+        const pos = x.sched_cycle_at(this.sched, now);
+        this.peekBuffer ??= this.core!.allocBytes(PEEK_CAP);
+        const { ptr, len } = this.peekBuffer;
         const written = x.sched_peek(this.sched, lo, hi, ptr, len);
         if (written >= 0) {
-          this.hooks.onVisualize?.(unpackEvents(this.core!.readBytes(ptr, written)), lo, hi, pos);
+          this.hooks.onVisualize(unpackEvents(this.core!.readBytes(ptr, written)), lo, hi, pos);
         }
-      } finally {
-        this.core!.free(ptr, len);
       }
     } catch (e) {
       this.stop();
