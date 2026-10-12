@@ -6,6 +6,7 @@
 //!  * audio worklet: `dsp_*` — sample-accurate voice rendering.
 
 mod dsp;
+mod handle;
 mod ir;
 mod pattern;
 mod sched;
@@ -13,6 +14,10 @@ mod sched;
 pub use ir::{Pat, NCTL, DEFAULTS};
 
 use std::sync::Mutex;
+
+static PATS: handle::Registry<Pat> = handle::Registry::new();
+static SCHEDS: handle::Registry<sched::Sched> = handle::Registry::new();
+static DSPS: handle::Registry<dsp::Dsp> = handle::Registry::new();
 
 static LAST_ERR: Mutex<String> = Mutex::new(String::new());
 
@@ -86,7 +91,11 @@ pub unsafe extern "C" fn ir_decode(ptr: *const u8, len: u32) -> i32 {
         std::slice::from_raw_parts(ptr, len as usize)
     };
     match ir::decode(bytes) {
-        Ok(pat) => Box::into_raw(Box::new(pat)) as i32,
+        Ok(pat) => {
+            let h = PATS.insert(pat);
+            if h == 0 { set_err("ir decode: too many patterns"); }
+            h
+        }
         Err(e) => {
             set_err(format!("ir decode: {e}"));
             0
@@ -100,9 +109,7 @@ pub unsafe extern "C" fn ir_decode(ptr: *const u8, len: u32) -> i32 {
 /// `h` must be a live handle from [`ir_decode`].
 #[no_mangle]
 pub unsafe extern "C" fn ir_release(h: i32) {
-    if h != 0 {
-        drop(Box::from_raw(h as *mut Pat));
-    }
+    PATS.remove(h);
 }
 
 // ---------------------------------------------------------------------------
@@ -111,71 +118,71 @@ pub unsafe extern "C" fn ir_release(h: i32) {
 
 #[no_mangle]
 pub extern "C" fn sched_new(cps: f64) -> i32 {
-    Box::into_raw(Box::new(sched::Sched::new(if cps.is_finite() && cps > 0.0 { cps } else { 1.0 }))) as i32
+    SCHEDS.insert(sched::Sched::new(if cps.is_finite() && cps > 0.0 { cps } else { 1.0 }))
 }
 
 /// # Safety
 /// Handles must be live.
 #[no_mangle]
 pub unsafe extern "C" fn sched_set_pattern(sched_h: i32, pat_h: i32) -> i32 {
-    if sched_h == 0 || pat_h == 0 {
+    if SCHEDS.ptr(sched_h).is_null() || PATS.ptr(pat_h).is_null() {
         set_err("sched_set_pattern: null handle");
         return 0;
     }
-    let s = &mut *(sched_h as *mut sched::Sched);
-    let p = &*(pat_h as *const Pat);
+    let s = &mut *(SCHEDS.ptr(sched_h));
+    let p = &*(PATS.ptr(pat_h));
     s.pat = Some(p.clone());
     1
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn sched_clear_pattern(sched_h: i32) {
-    if sched_h != 0 {
-        (*(sched_h as *mut sched::Sched)).pat = None;
+    if !SCHEDS.ptr(sched_h).is_null() {
+        (*(SCHEDS.ptr(sched_h))).pat = None;
     }
 }
 
 /// Change tempo, rebasing the clock at `audio_now` (audio-context seconds).
 #[no_mangle]
 pub unsafe extern "C" fn sched_set_cps(sched_h: i32, cps: f64, audio_now: f64) {
-    if sched_h != 0 && cps.is_finite() && cps > 0.0 && audio_now.is_finite() {
-        (*(sched_h as *mut sched::Sched)).set_cps(cps, audio_now);
+    if !SCHEDS.ptr(sched_h).is_null() && cps.is_finite() && cps > 0.0 && audio_now.is_finite() {
+        (*(SCHEDS.ptr(sched_h))).set_cps(cps, audio_now);
     }
 }
 
 /// Cycle position at audio-context time `audio_now`.
 #[no_mangle]
 pub unsafe extern "C" fn sched_cycle_at(sched_h: i32, audio_now: f64) -> f64 {
-    if sched_h == 0 {
+    if SCHEDS.ptr(sched_h).is_null() {
         return 0.0;
     }
-    (*(sched_h as *const sched::Sched)).cycle_at(audio_now)
+    (*(SCHEDS.ptr(sched_h))).cycle_at(audio_now)
 }
 
 /// Audio-context time of a cycle position (inverse of [`sched_cycle_at`]).
 #[no_mangle]
 pub unsafe extern "C" fn sched_audio_at(sched_h: i32, cycle: f64) -> f64 {
-    if sched_h == 0 {
+    if SCHEDS.ptr(sched_h).is_null() {
         return 0.0;
     }
-    (*(sched_h as *const sched::Sched)).audio_at(cycle)
+    (*(SCHEDS.ptr(sched_h))).audio_at(cycle)
 }
 
 /// Restart the scheduling cursor at the current cycle (play / pattern swap).
 #[no_mangle]
 pub unsafe extern "C" fn sched_reset(sched_h: i32, audio_now: f64) {
-    if sched_h != 0 {
-        (*(sched_h as *mut sched::Sched)).reset(audio_now);
+    if !SCHEDS.ptr(sched_h).is_null() {
+        (*(SCHEDS.ptr(sched_h))).reset(audio_now);
     }
 }
 
 /// Count events with onset in the un-scheduled window `[cursor, horizon)`.
 #[no_mangle]
 pub unsafe extern "C" fn sched_count(sched_h: i32, horizon: f64) -> i32 {
-    if sched_h == 0 {
+    if SCHEDS.ptr(sched_h).is_null() {
         return -1;
     }
-    let count = (*(sched_h as *mut sched::Sched)).count(horizon);
+    let count = (*(SCHEDS.ptr(sched_h))).count(horizon);
     if count < 0 { set_err("pattern exceeds query work or event limit"); }
     count
 }
@@ -188,10 +195,10 @@ pub unsafe extern "C" fn sched_count(sched_h: i32, horizon: f64) -> i32 {
 /// `out` must reference `cap` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn sched_query(sched_h: i32, horizon: f64, out: *mut u8, cap: u32) -> i32 {
-    if sched_h == 0 || out.is_null() {
+    if SCHEDS.ptr(sched_h).is_null() || out.is_null() {
         return -1;
     }
-    let s = &mut *(sched_h as *mut sched::Sched);
+    let s = &mut *(SCHEDS.ptr(sched_h));
     let buf = std::slice::from_raw_parts_mut(out, cap as usize);
     match s.query(horizon, buf) {
         Ok(n) => n as i32,
@@ -214,10 +221,10 @@ pub unsafe extern "C" fn sched_peek(
     out: *mut u8,
     cap: u32,
 ) -> i32 {
-    if sched_h == 0 || out.is_null() {
+    if SCHEDS.ptr(sched_h).is_null() || out.is_null() {
         return -1;
     }
-    let s = &*(sched_h as *const sched::Sched);
+    let s = &*(SCHEDS.ptr(sched_h));
     let buf = std::slice::from_raw_parts_mut(out, cap as usize);
     match s.pack_range(lo, hi, buf) {
         Ok(n) => n as i32,
@@ -232,9 +239,7 @@ pub unsafe extern "C" fn sched_peek(
 /// `h` must be a live handle from [`sched_new`].
 #[no_mangle]
 pub unsafe extern "C" fn sched_free(h: i32) {
-    if h != 0 {
-        drop(Box::from_raw(h as *mut sched::Sched));
-    }
+    SCHEDS.remove(h);
 }
 
 // ---------------------------------------------------------------------------
@@ -243,7 +248,7 @@ pub unsafe extern "C" fn sched_free(h: i32) {
 
 #[no_mangle]
 pub extern "C" fn dsp_new(sample_rate: f64) -> i32 {
-    Box::into_raw(Box::new(dsp::Dsp::new(sample_rate))) as i32
+    DSPS.insert(dsp::Dsp::new(sample_rate))
 }
 
 /// Schedule a note at absolute time `at_sec` (audio-context seconds).
@@ -259,10 +264,10 @@ pub unsafe extern "C" fn dsp_schedule(
     sound: *const u8,
     sound_len: u32,
 ) -> i32 {
-    if h == 0 || ctl.is_null() {
+    if DSPS.ptr(h).is_null() || ctl.is_null() {
         return 0;
     }
-    let d = &mut *(h as *mut dsp::Dsp);
+    let d = &mut *(DSPS.ptr(h));
     let mut params = [0.0; ir::NCTL];
     params.copy_from_slice(std::slice::from_raw_parts(ctl, ir::NCTL));
     let name = if sound.is_null() || sound_len == 0 {
@@ -281,10 +286,10 @@ pub unsafe extern "C" fn dsp_schedule(
 /// `l`/`r` must reference `n` writable `f32`s.
 #[no_mangle]
 pub unsafe extern "C" fn dsp_process(h: i32, l: *mut f32, r: *mut f32, n: i32, base_frame: f64) {
-    if h == 0 || n <= 0 || l.is_null() || r.is_null() {
+    if DSPS.ptr(h).is_null() || n <= 0 || l.is_null() || r.is_null() {
         return;
     }
-    let d = &mut *(h as *mut dsp::Dsp);
+    let d = &mut *(DSPS.ptr(h));
     let left = std::slice::from_raw_parts_mut(l, n as usize);
     let right = std::slice::from_raw_parts_mut(r, n as usize);
     d.process(left, right, base_frame as i64);
@@ -293,10 +298,10 @@ pub unsafe extern "C" fn dsp_process(h: i32, l: *mut f32, r: *mut f32, n: i32, b
 /// Diagnostics: `(voices << 16) | pending`.
 #[no_mangle]
 pub unsafe extern "C" fn dsp_stats(h: i32) -> u32 {
-    if h == 0 {
+    if DSPS.ptr(h).is_null() {
         return 0;
     }
-    let d = &*(h as *const dsp::Dsp);
+    let d = &*(DSPS.ptr(h));
     let (v, p) = d.stats();
     ((v.min(0xffff) as u32) << 16) | (p.min(0xffff) as u32)
 }
@@ -304,48 +309,48 @@ pub unsafe extern "C" fn dsp_stats(h: i32) -> u32 {
 /// Total dropped notes and stolen voices for this DSP instance.
 #[no_mangle]
 pub unsafe extern "C" fn dsp_overloads(h: i32) -> u32 {
-    if h == 0 { return 0; }
-    (*(h as *const dsp::Dsp)).overloads
+    if DSPS.ptr(h).is_null() { return 0; }
+    (*(DSPS.ptr(h))).overloads
 }
 
 /// Diagnostics pack: sched_calls (f64 bits via separate calls instead).
 #[no_mangle]
 pub unsafe extern "C" fn dsp_sched_calls(h: i32) -> u32 {
-    if h == 0 {
+    if DSPS.ptr(h).is_null() {
         return 0;
     }
-    (*(h as *const dsp::Dsp)).sched_calls
+    (*(DSPS.ptr(h))).sched_calls
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn dsp_spawned(h: i32) -> u32 {
-    if h == 0 {
+    if DSPS.ptr(h).is_null() {
         return 0;
     }
-    (*(h as *const dsp::Dsp)).spawned_total
+    (*(DSPS.ptr(h))).spawned_total
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn dsp_first_at(h: i32) -> f64 {
-    if h == 0 {
+    if DSPS.ptr(h).is_null() {
         return f64::NAN;
     }
-    (*(h as *const dsp::Dsp)).first_at
+    (*(DSPS.ptr(h))).first_at
 }
 
 /// Kill all pending events, voices and delay tails (transport stop).
 #[no_mangle]
 pub unsafe extern "C" fn dsp_flush(h: i32) {
-    if h != 0 {
-        (*(h as *mut dsp::Dsp)).flush();
+    if !DSPS.ptr(h).is_null() {
+        (*(DSPS.ptr(h))).flush();
     }
 }
 
 /// Cancel pending notes without stopping voices already sounding.
 #[no_mangle]
 pub unsafe extern "C" fn dsp_clear_pending(h: i32) {
-    if h != 0 {
-        (*(h as *mut dsp::Dsp)).clear_pending();
+    if !DSPS.ptr(h).is_null() {
+        (*(DSPS.ptr(h))).clear_pending();
     }
 }
 
@@ -353,9 +358,7 @@ pub unsafe extern "C" fn dsp_clear_pending(h: i32) {
 /// `h` must be a live handle from [`dsp_new`].
 #[no_mangle]
 pub unsafe extern "C" fn dsp_free(h: i32) {
-    if h != 0 {
-        drop(Box::from_raw(h as *mut dsp::Dsp));
-    }
+    DSPS.remove(h);
 }
 
 /// Register mono PCM, copied into the DSP. Returns 1 on success.
@@ -363,12 +366,12 @@ pub unsafe extern "C" fn dsp_free(h: i32) {
 /// All pointers must refer to valid slices, and `h` must be a live DSP handle.
 #[no_mangle]
 pub unsafe extern "C" fn dsp_load_sample(h: i32, name: *const u8, name_len: i32, data: *const f32, frames: i32, rate: f64) -> i32 {
-    if h == 0 || name.is_null() || data.is_null() || name_len <= 0 || name_len > 127 || frames <= 0 {
+    if DSPS.ptr(h).is_null() || name.is_null() || data.is_null() || name_len <= 0 || name_len > 127 || frames <= 0 {
         return 0;
     }
     let Ok(name) = std::str::from_utf8(std::slice::from_raw_parts(name, name_len as usize)) else { return 0; };
     let samples = std::slice::from_raw_parts(data, frames as usize);
-    (*(h as *mut dsp::Dsp)).load_sample(name, samples, rate) as i32
+    (*(DSPS.ptr(h))).load_sample(name, samples, rate) as i32
 }
 
 /// Remove a registered sample and its queued/active notes. Returns 1 if found.
@@ -376,7 +379,7 @@ pub unsafe extern "C" fn dsp_load_sample(h: i32, name: *const u8, name_len: i32,
 /// `name` must refer to a valid slice, and `h` must be a live DSP handle.
 #[no_mangle]
 pub unsafe extern "C" fn dsp_remove_sample(h: i32, name: *const u8, name_len: i32) -> i32 {
-    if h == 0 || name.is_null() || name_len <= 0 || name_len > 127 { return 0; }
+    if DSPS.ptr(h).is_null() || name.is_null() || name_len <= 0 || name_len > 127 { return 0; }
     let Ok(name) = std::str::from_utf8(std::slice::from_raw_parts(name, name_len as usize)) else { return 0; };
-    (*(h as *mut dsp::Dsp)).remove_sample(name) as i32
+    (*(DSPS.ptr(h))).remove_sample(name) as i32
 }
