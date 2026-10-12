@@ -256,6 +256,8 @@ npm run verify       # everything above, in order
 ```
 
 GitHub Actions runs `npm run verify` for pushes to `main` and pull requests.
+Version tags also run the [Release workflow](docs/RELEASING.md), which publishes
+verified CLI/Web archives and SHA-256 checksums to GitHub Releases.
 The checks cover Rust DSP/scheduling, TypeScript DSL and WASM boundaries,
 audio initialization/retry, CLI rendering, and browser playback, draft recovery,
 downloads for every export format, sample playback/persistence/deletion,

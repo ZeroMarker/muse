@@ -17,8 +17,8 @@ import { SAMPLE_RATE, encodeWav, renderOffline, rms } from "./wav";
 
 import { loadSamples } from "./samples";
 import { parseArgs, type Flags } from "./args";
+import { version as VERSION } from "../package.json";
 
-const VERSION = "0.1.0";
 const PROMPT = "muse ❯ ";
 
 const USAGE = `muse ${VERSION} — live music DSL for the terminal

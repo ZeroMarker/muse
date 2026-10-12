@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { parseMidi } from "midi-file";
 
 const CLI = "dist/cli/muse.cjs";
+const { version } = JSON.parse(readFileSync("package.json", "utf8"));
 const failures = [];
 const check = (ok, label) => {
   console.log(`${ok ? "  ✓" : "  ✗"} ${label}`);
@@ -30,7 +31,7 @@ if (!existsSync(CLI)) {
 // 2. --version
 {
   const r = spawnSync("node", [CLI, "--version"], { encoding: "utf8" });
-  check(r.status === 0 && /^\d+\.\d+\.\d+/.test(r.stdout.trim()), `--version (${r.stdout.trim()})`);
+  check(r.status === 0 && r.stdout.trim() === version, `--version matches package.json (${r.stdout.trim()})`);
 }
 
 // 3. run a pattern file → wav

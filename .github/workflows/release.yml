@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to release (for example v0.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Check release version
+        run: node scripts/package-release.mjs "$RELEASE_TAG" --check
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run verify
+      - name: Package verified builds
+        run: node scripts/package-release.mjs "$RELEASE_TAG"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: dist/release/${{ env.RELEASE_TAG }}/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: release-assets
+      - name: Verify and publish assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          sha256sum --check SHA256SUMS
+          prerelease=false
+          flags=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            prerelease=true
+            flags+=(--prerelease --latest=false)
+          fi
+          if draft=$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft); then
+            if [[ "$draft" != true ]]; then
+              echo "Release is already published; refusing to replace its assets."
+              exit 1
+            fi
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --generate-notes \
+              --title "Muse $RELEASE_TAG" "${flags[@]}"
+          fi
+          gh release upload "$RELEASE_TAG" "muse-$RELEASE_TAG-cli.tar.gz" \
+            "muse-$RELEASE_TAG-web.tar.gz" SHA256SUMS --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease="$prerelease"
