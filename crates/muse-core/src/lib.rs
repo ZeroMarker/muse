@@ -188,7 +188,7 @@ pub unsafe extern "C" fn sched_count(sched_h: i32, horizon: f64) -> i32 {
 /// `out` must reference `cap` writable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn sched_query(sched_h: i32, horizon: f64, out: *mut u8, cap: u32) -> i32 {
-    if sched_h == 0 {
+    if sched_h == 0 || out.is_null() {
         return -1;
     }
     let s = &mut *(sched_h as *mut sched::Sched);
@@ -214,7 +214,7 @@ pub unsafe extern "C" fn sched_peek(
     out: *mut u8,
     cap: u32,
 ) -> i32 {
-    if sched_h == 0 {
+    if sched_h == 0 || out.is_null() {
         return -1;
     }
     let s = &*(sched_h as *const sched::Sched);
@@ -281,7 +281,7 @@ pub unsafe extern "C" fn dsp_schedule(
 /// `l`/`r` must reference `n` writable `f32`s.
 #[no_mangle]
 pub unsafe extern "C" fn dsp_process(h: i32, l: *mut f32, r: *mut f32, n: i32, base_frame: f64) {
-    if h == 0 || n <= 0 {
+    if h == 0 || n <= 0 || l.is_null() || r.is_null() {
         return;
     }
     let d = &mut *(h as *mut dsp::Dsp);
