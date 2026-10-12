@@ -28,7 +28,13 @@ pub struct Sched {
 
 impl Sched {
     pub fn new(cps: f64) -> Self {
-        Sched { pat: None, cps, epoch_audio: 0.0, epoch_cycle: 0.0, cursor: 0.0 }
+        Sched {
+            pat: None,
+            cps,
+            epoch_audio: 0.0,
+            epoch_cycle: 0.0,
+            cursor: 0.0,
+        }
     }
 
     pub fn cycle_at(&self, audio_now: f64) -> f64 {
@@ -56,7 +62,9 @@ impl Sched {
     }
 
     fn haps(&self, lo: f64, hi: f64) -> Result<Vec<Hap>, i32> {
-        let Some(pat) = &self.pat else { return Ok(Vec::new()) };
+        let Some(pat) = &self.pat else {
+            return Ok(Vec::new());
+        };
         if hi <= lo {
             return Ok(Vec::new());
         }
@@ -75,7 +83,9 @@ impl Sched {
 
     /// Number of events in the un-scheduled window `[cursor, horizon)`.
     pub fn count(&self, horizon: f64) -> i32 {
-        self.haps(self.cursor, horizon).map(|haps| haps.len() as i32).unwrap_or(-3)
+        self.haps(self.cursor, horizon)
+            .map(|haps| haps.len() as i32)
+            .unwrap_or(-3)
     }
 
     /// Pack events from `[cursor, horizon)` into `out`, advancing the cursor.
@@ -104,8 +114,12 @@ impl Sched {
             i += 8;
             out[i..i + 8].copy_from_slice(&dur_sec.to_le_bytes());
             i += 8;
-            for s in 0..NCTL {
-                let v = if h.ctl[s].is_finite() { h.ctl[s] } else { DEFAULTS[s] };
+            for (s, &default) in DEFAULTS.iter().enumerate().take(NCTL) {
+                let v = if h.ctl[s].is_finite() {
+                    h.ctl[s]
+                } else {
+                    default
+                };
                 out[i..i + 8].copy_from_slice(&v.to_le_bytes());
                 i += 8;
             }
@@ -124,7 +138,10 @@ mod tests {
     use crate::ir::{Pat, NCTL};
 
     fn atom(sound: &str) -> Pat {
-        Pat::Atom { sound: sound.into(), ctl: [f64::NAN; NCTL] }
+        Pat::Atom {
+            sound: sound.into(),
+            ctl: [f64::NAN; NCTL],
+        }
     }
 
     /// Parse packed events back out: (onset_cycle, dur_sec, ctl, sound).
@@ -188,7 +205,10 @@ mod tests {
         let mut buf = vec![0u8; 4096];
         let n = s.query(1.0, &mut buf).unwrap();
         let evs = unpack(&buf[..n]);
-        assert_eq!(evs[0].2[crate::ir::CTL_GAIN], crate::ir::DEFAULTS[crate::ir::CTL_GAIN]);
+        assert_eq!(
+            evs[0].2[crate::ir::CTL_GAIN],
+            crate::ir::DEFAULTS[crate::ir::CTL_GAIN]
+        );
         assert_eq!(evs[0].3, "bd");
         // dur of a whole-cycle event at 1 cps = 1s
         assert!((evs[0].1 - 1.0).abs() < 1e-9);

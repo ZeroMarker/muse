@@ -67,10 +67,7 @@ pub enum Pat {
     /// No events.
     Rest,
     /// One event per cycle, occupying the whole cycle in its own frame.
-    Atom {
-        sound: String,
-        ctl: [f64; NCTL],
-    },
+    Atom { sound: String, ctl: [f64; NCTL] },
     /// Divide the cycle evenly among children (`a b`, `[a b]`).
     Cat(Vec<Pat>),
     /// All children in parallel (`(a b)`).
@@ -86,10 +83,7 @@ pub enum Pat {
     /// One child per cycle (`<a b>`).
     Altern(Vec<Pat>),
     /// Intersect the child with a hit/rest mask (euclid, struct, chunk..).
-    Struct {
-        mask: Vec<bool>,
-        child: Box<Pat>,
-    },
+    Struct { mask: Vec<bool>, child: Box<Pat> },
     /// Offset in cycles.
     Shift(f64, Box<Pat>),
     /// Force a control slot on all descendant events (wins over atom values).
@@ -145,7 +139,9 @@ impl<'a> Reader<'a> {
 
 fn node(r: &mut Reader, depth: usize) -> Result<Pat, String> {
     r.nodes += 1;
-    if r.nodes > 16_384 { return Err("pattern has too many nodes".into()); }
+    if r.nodes > 16_384 {
+        return Err("pattern has too many nodes".into());
+    }
     if depth > 64 {
         return Err("pattern nesting too deep".into());
     }
@@ -154,7 +150,9 @@ fn node(r: &mut Reader, depth: usize) -> Result<Pat, String> {
         0 => Ok(Pat::Rest),
         1 => {
             let sound = r.str()?;
-            if sound.len() > 127 || !sound.is_ascii() { return Err("bad instrument name".into()); }
+            if sound.len() > 127 || !sound.is_ascii() {
+                return Err("bad instrument name".into());
+            }
             let mut ctl = [f64::NAN; NCTL];
             for c in ctl.iter_mut() {
                 *c = r.f64()?;
@@ -165,18 +163,24 @@ fn node(r: &mut Reader, depth: usize) -> Result<Pat, String> {
         3 => Ok(Pat::Overlay(children(r, depth)?)),
         4 => {
             let k = r.f64()?;
-            if !k.is_finite() || k <= 0.0 { return Err("bad fast factor".into()); }
+            if !k.is_finite() || k <= 0.0 {
+                return Err("bad fast factor".into());
+            }
             Ok(Pat::Fast(k, Box::new(node(r, depth + 1)?)))
         }
         5 => {
             let k = r.f64()?;
-            if !k.is_finite() || k <= 0.0 || !(1.0 / k).is_finite() { return Err("bad slow factor".into()); }
+            if !k.is_finite() || k <= 0.0 || !(1.0 / k).is_finite() {
+                return Err("bad slow factor".into());
+            }
             let inner = node(r, depth + 1)?;
             Ok(Pat::Fast(1.0 / k, Box::new(inner)))
         }
         6 => {
             let n = r.u64()? as i64;
-            if n <= 0 || n > 9_007_199_254_740_991 { return Err("bad every interval".into()); }
+            if n <= 0 || n > 9_007_199_254_740_991 {
+                return Err("bad every interval".into());
+            }
             let step = Box::new(node(r, depth + 1)?);
             let child = Box::new(node(r, depth + 1)?);
             Ok(Pat::Every(n.max(1), step, child))
@@ -185,11 +189,17 @@ fn node(r: &mut Reader, depth: usize) -> Result<Pat, String> {
         8 => Ok(Pat::Altern(children(r, depth)?)),
         9 => {
             let mask_str = r.str()?;
-            if mask_str.is_empty() || mask_str.len() > 4096 || !mask_str.bytes().all(|c| c == b'x' || c == b'.') {
+            if mask_str.is_empty()
+                || mask_str.len() > 4096
+                || !mask_str.bytes().all(|c| c == b'x' || c == b'.')
+            {
                 return Err("bad struct mask".into());
             }
             let mask = mask_str.bytes().map(|c| c != b'.').collect();
-            Ok(Pat::Struct { mask, child: Box::new(node(r, depth + 1)?) })
+            Ok(Pat::Struct {
+                mask,
+                child: Box::new(node(r, depth + 1)?),
+            })
         }
         10 => {
             // Chunk(n, idx) decoded as a single-slot struct: cheaper and
@@ -213,17 +223,23 @@ fn node(r: &mut Reader, depth: usize) -> Result<Pat, String> {
         }
         12 => {
             let s = r.str()?;
-            if s.len() > 127 || !s.is_ascii() { return Err("bad instrument name".into()); }
+            if s.len() > 127 || !s.is_ascii() {
+                return Err("bad instrument name".into());
+            }
             Ok(Pat::SetSound(s, Box::new(node(r, depth + 1)?)))
         }
         13 => {
             let d = r.f64()?;
-            if !d.is_finite() { return Err("bad shift".into()); }
+            if !d.is_finite() {
+                return Err("bad shift".into());
+            }
             Ok(Pat::Shift(d, Box::new(node(r, depth + 1)?)))
         }
         14 => {
             let p = r.f64()?;
-            if !p.is_finite() || !(0.0..=1.0).contains(&p) { return Err("bad probability".into()); }
+            if !p.is_finite() || !(0.0..=1.0).contains(&p) {
+                return Err("bad probability".into());
+            }
             let step = Box::new(node(r, depth + 1)?);
             let child = Box::new(node(r, depth + 1)?);
             Ok(Pat::Sometimes(p.clamp(0.0, 1.0), step, child))
@@ -231,7 +247,9 @@ fn node(r: &mut Reader, depth: usize) -> Result<Pat, String> {
         15 => {
             let slot = r.u8()? as usize;
             let delta = r.f64()?;
-            if !delta.is_finite() { return Err("bad transpose offset".into()); }
+            if !delta.is_finite() {
+                return Err("bad transpose offset".into());
+            }
             if slot >= NCTL {
                 return Err(format!("ctl slot {slot} out of range"));
             }
@@ -246,7 +264,10 @@ fn node(r: &mut Reader, depth: usize) -> Result<Pat, String> {
             let child = Box::new(node(r, depth + 1)?);
             Ok(Pat::Chunk(n, step, child))
         }
-        17 => Ok(Pat::WithNote(Box::new(node(r, depth + 1)?), Box::new(node(r, depth + 1)?))),
+        17 => Ok(Pat::WithNote(
+            Box::new(node(r, depth + 1)?),
+            Box::new(node(r, depth + 1)?),
+        )),
         t => Err(format!("unknown IR tag {t}")),
     }
 }
@@ -260,7 +281,11 @@ fn children(r: &mut Reader, depth: usize) -> Result<Vec<Pat>, String> {
 }
 
 pub fn decode(bytes: &[u8]) -> Result<Pat, String> {
-    let mut r = Reader { b: bytes, i: 0, nodes: 0 };
+    let mut r = Reader {
+        b: bytes,
+        i: 0,
+        nodes: 0,
+    };
     if r.take(4)? != b"MUSE" {
         return Err("bad magic".into());
     }
@@ -269,10 +294,11 @@ pub fn decode(bytes: &[u8]) -> Result<Pat, String> {
         return Err(format!("unsupported IR version {v}"));
     }
     let p = node(&mut r, 0)?;
-    if r.i != bytes.len() { return Err("trailing bytes in pattern IR".into()); }
+    if r.i != bytes.len() {
+        return Err("trailing bytes in pattern IR".into());
+    }
     Ok(p)
 }
-
 
 #[cfg(test)]
 mod tests {

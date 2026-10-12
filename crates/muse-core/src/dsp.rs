@@ -7,8 +7,10 @@
 //! Instruments: pitched oscillators (`sine saw square tri noise`) and drum
 //! voices (`bd sn hh oh cp tom`) selected by the event's `sound` token.
 
-use crate::ir::{CTL_ATTACK, CTL_CRUSH, CTL_CUTOFF, CTL_DECAY, CTL_DELAY, CTL_GAIN, CTL_NOTE,
-                CTL_PAN, CTL_RESONANCE, CTL_RELEASE, CTL_SPEED, CTL_SUSTAIN, NCTL};
+use crate::ir::{
+    CTL_ATTACK, CTL_CRUSH, CTL_CUTOFF, CTL_DECAY, CTL_DELAY, CTL_GAIN, CTL_NOTE, CTL_PAN,
+    CTL_RELEASE, CTL_RESONANCE, CTL_SPEED, CTL_SUSTAIN, NCTL,
+};
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -162,41 +164,56 @@ impl Voice {
             let a = sample.data.get(i).copied().unwrap_or(0.0) as f64;
             let b = sample.data.get(i + 1).copied().unwrap_or(0.0) as f64;
             a + (b - a) * (position - position.floor())
-        } else { match self.wave {
-            Wave::Sine => (self.phase * std::f64::consts::TAU).sin(),
-            Wave::Saw => self.phase * 2.0 - 1.0,
-            Wave::Square => {
-                if self.phase < 0.5 {
-                    1.0
-                } else {
-                    -1.0
+        } else {
+            match self.wave {
+                Wave::Sine => (self.phase * std::f64::consts::TAU).sin(),
+                Wave::Saw => self.phase * 2.0 - 1.0,
+                Wave::Square => {
+                    if self.phase < 0.5 {
+                        1.0
+                    } else {
+                        -1.0
+                    }
                 }
+                Wave::Tri => 1.0 - 4.0 * (self.phase - 0.5).abs(),
+                Wave::Pulse => {
+                    if self.phase < 0.25 {
+                        1.0
+                    } else {
+                        -1.0 / 3.0
+                    }
+                }
+                Wave::Organ => {
+                    ((self.phase * std::f64::consts::TAU).sin()
+                        + 0.5 * (self.phase * std::f64::consts::TAU * 2.0).sin()
+                        + 0.25 * (self.phase * std::f64::consts::TAU * 3.0).sin())
+                        / 1.75
+                }
+                Wave::Noise => self.next_noise(),
+                Wave::Bd => {
+                    let click = if t < 0.008 {
+                        self.next_noise() * 0.5
+                    } else {
+                        0.0
+                    };
+                    (self.phase * std::f64::consts::TAU).sin() + click
+                }
+                Wave::Sn => {
+                    let tone = (self.phase * std::f64::consts::TAU).sin();
+                    tone * 0.35 + self.next_noise() * 0.8
+                }
+                Wave::Hh | Wave::Oh | Wave::Cp => self.next_noise(),
+                Wave::Tom => (self.phase * std::f64::consts::TAU).sin(),
             }
-            Wave::Tri => 1.0 - 4.0 * (self.phase - 0.5).abs(),
-            Wave::Pulse => if self.phase < 0.25 { 1.0 } else { -1.0 / 3.0 },
-            Wave::Organ => ((self.phase * std::f64::consts::TAU).sin()
-                + 0.5 * (self.phase * std::f64::consts::TAU * 2.0).sin()
-                + 0.25 * (self.phase * std::f64::consts::TAU * 3.0).sin()) / 1.75,
-            Wave::Noise => self.next_noise(),
-            Wave::Bd => {
-                let click = if t < 0.008 { self.next_noise() * 0.5 } else { 0.0 };
-                (self.phase * std::f64::consts::TAU).sin() + click
-            }
-            Wave::Sn => {
-                let tone = (self.phase * std::f64::consts::TAU).sin();
-                tone * 0.35 + self.next_noise() * 0.8
-            }
-            Wave::Hh | Wave::Oh | Wave::Cp => self.next_noise(),
-            Wave::Tom => (self.phase * std::f64::consts::TAU).sin(),
-        }};
+        };
 
         let mut v = raw * env;
 
         // --- resonant filter (TPT/ZDF state variable) ---
         if self.filter != 3 {
             // Solve the feedback loop before updating the integrator states.
-            let hp = (v - (self.k + self.g) * self.ic1 - self.ic2)
-                / (1.0 + self.g * (self.g + self.k));
+            let hp =
+                (v - (self.k + self.g) * self.ic1 - self.ic2) / (1.0 + self.g * (self.g + self.k));
             let bp = self.g * hp + self.ic1;
             let lp = self.g * bp + self.ic2;
             self.ic1 = self.g * hp + bp;
@@ -213,7 +230,7 @@ impl Voice {
         if self.crush > 0.0 {
             if self.sh_count == 0 {
                 let bits = (14.0 * (1.0 - self.crush) + 2.0).max(1.0);
-                let steps = (2.0f64.powf(bits)) as f64;
+                let steps = 2.0f64.powf(bits);
                 self.sh_hold = ((v * steps).round() / steps) as f32;
                 self.sh_count = 1 + (self.crush * 40.0) as u32;
             }
@@ -244,7 +261,11 @@ pub struct Dsp {
 
 impl Dsp {
     pub fn new(sample_rate: f64) -> Self {
-        let sr = if sample_rate > 0.0 { sample_rate } else { 48000.0 };
+        let sr = if sample_rate > 0.0 {
+            sample_rate
+        } else {
+            48000.0
+        };
         let dlen = (sr * 0.4).max(sr * 0.1) as usize;
         Dsp {
             sr,
@@ -261,24 +282,46 @@ impl Dsp {
     }
 
     pub fn load_sample(&mut self, name: &str, data: &[f32], rate: f64) -> bool {
-        if name.is_empty() || name.len() > 127 || !name.is_ascii() || data.is_empty()
-            || !rate.is_finite() || !(8000.0..=192000.0).contains(&rate)
-            || data.len() > (rate * 30.0) as usize {
+        if name.is_empty()
+            || name.len() > 127
+            || !name.is_ascii()
+            || data.is_empty()
+            || !rate.is_finite()
+            || !(8000.0..=192000.0).contains(&rate)
+            || data.len() > (rate * 30.0) as usize
+        {
             return false;
         }
-        self.samples.insert(name.to_owned(), Sample {
-            name: name.to_owned(),
-            data: Arc::new(data.iter().map(|v| if v.is_finite() { v.clamp(-1.0, 1.0) } else { 0.0 }).collect()),
-            rate,
-        });
+        self.samples.insert(
+            name.to_owned(),
+            Sample {
+                name: name.to_owned(),
+                data: Arc::new(
+                    data.iter()
+                        .map(|v| {
+                            if v.is_finite() {
+                                v.clamp(-1.0, 1.0)
+                            } else {
+                                0.0
+                            }
+                        })
+                        .collect(),
+                ),
+                rate,
+            },
+        );
         true
     }
 
     pub fn remove_sample(&mut self, name: &str) -> bool {
-        if self.samples.remove(name).is_none() { return false; }
+        if self.samples.remove(name).is_none() {
+            return false;
+        }
         // Drop queued and active references so removal also frees their PCM.
-        self.pending.retain(|p| p.sample.as_ref().map_or(true, |s| s.name != name));
-        self.voices.retain(|v| v.sample.as_ref().map_or(true, |s| s.name != name));
+        self.pending
+            .retain(|p| p.sample.as_ref().is_none_or(|s| s.name != name));
+        self.voices
+            .retain(|v| v.sample.as_ref().is_none_or(|s| s.name != name));
         true
     }
 
@@ -288,27 +331,42 @@ impl Dsp {
         if self.sched_calls == 1 {
             self.first_at = at_sec;
         }
-        if !at_sec.is_finite() { return; }
+        if !at_sec.is_finite() {
+            return;
+        }
         if self.pending.len() >= MAX_PENDING {
             self.overloads = self.overloads.saturating_add(1);
             return;
         }
         let start_frame = (at_sec * self.sr).round() as i64;
-        let index = self.pending.partition_point(|p| p.start_frame <= start_frame);
-        self.pending.insert(index, Pending {
-            start_frame,
-            dur: dur_sec.max(0.01),
-            ctl: *ctl,
-            wave: wave_from_name(sound),
-            sample: self.samples.get(sound).cloned(),
-        });
+        let index = self
+            .pending
+            .partition_point(|p| p.start_frame <= start_frame);
+        self.pending.insert(
+            index,
+            Pending {
+                start_frame,
+                dur: dur_sec.max(0.01),
+                ctl: *ctl,
+                wave: wave_from_name(sound),
+                sample: self.samples.get(sound).cloned(),
+            },
+        );
     }
 
     fn spawn(&mut self, p: &Pending) {
         let c = p.ctl;
         // A registered sample replaces all instrument-specific processing.
-        let wave = if p.sample.is_some() { Wave::Saw } else { p.wave };
-        let is_drum = p.sample.is_none() && matches!(wave, Wave::Bd | Wave::Sn | Wave::Hh | Wave::Oh | Wave::Cp | Wave::Tom);
+        let wave = if p.sample.is_some() {
+            Wave::Saw
+        } else {
+            p.wave
+        };
+        let is_drum = p.sample.is_none()
+            && matches!(
+                wave,
+                Wave::Bd | Wave::Sn | Wave::Hh | Wave::Oh | Wave::Cp | Wave::Tom
+            );
 
         let freq = midi_to_freq(clamp_def(c[CTL_NOTE], -20.0, 140.0, 60.0))
             * clamp_def(c[CTL_SPEED], 0.01, 16.0, 1.0);
@@ -326,11 +384,11 @@ impl Dsp {
         let k = 1.0 / q;
 
         let filter = match wave {
-            Wave::Hh | Wave::Oh => 2,        // highpass
-            Wave::Sn | Wave::Cp => 1,        // bandpass
+            Wave::Hh | Wave::Oh => 2, // highpass
+            Wave::Sn | Wave::Cp => 1, // bandpass
             Wave::Noise if c[CTL_CUTOFF].is_finite() => 0,
-            Wave::Bd => 3,                   // no filter on kick
-            _ => 0,                          // lowpass
+            Wave::Bd => 3, // no filter on kick
+            _ => 0,        // lowpass
         };
 
         // Drum envelopes shape themselves (sustain 0); pitched voices use
@@ -357,10 +415,18 @@ impl Dsp {
             (
                 clamp_def(c[CTL_ATTACK], 1e-4, 5.0, 0.005),
                 clamp_def(c[CTL_DECAY], 0.0, 10.0, 0.05),
-                if p.dur.is_finite() && p.dur > 0.0 { p.dur } else { 0.25 },
+                if p.dur.is_finite() && p.dur > 0.0 {
+                    p.dur
+                } else {
+                    0.25
+                },
             )
         };
-        let s = if is_drum { 0.0 } else { clamp_def(c[CTL_SUSTAIN], 0.0, 1.0, 1.0) };
+        let s = if is_drum {
+            0.0
+        } else {
+            clamp_def(c[CTL_SUSTAIN], 0.0, 1.0, 1.0)
+        };
         let r = clamp_def(c[CTL_RELEASE], 0.001, 5.0, 0.05);
 
         let v = Voice {
@@ -385,7 +451,11 @@ impl Dsp {
             ic2: 0.0,
             filter,
             amp: clamp_def(c[CTL_GAIN], 0.0, 4.0, 1.0)
-                * if matches!(wave, Wave::Hh | Wave::Oh) { 0.6 } else { 1.0 },
+                * if matches!(wave, Wave::Hh | Wave::Oh) {
+                    0.6
+                } else {
+                    1.0
+                },
             pan: clamp_def(c[CTL_PAN], 0.0, 1.0, 0.5),
             send: clamp_def(c[CTL_DELAY], 0.0, 1.0, 0.0),
             crush: clamp_def(c[CTL_CRUSH], 0.0, 1.0, 0.0),
@@ -416,7 +486,10 @@ impl Dsp {
         let sr = self.sr;
 
         // spawn voices whose start has been reached
-        while let Some(pos) = self.pending.iter().position(|p| p.start_frame <= base_frame + n as i64)
+        while let Some(pos) = self
+            .pending
+            .iter()
+            .position(|p| p.start_frame <= base_frame + n as i64)
         {
             let p = self.pending.remove(pos);
             self.spawn(&p);
@@ -444,7 +517,7 @@ impl Dsp {
                     continue;
                 }
                 let out = v.sample(t, sr);
-                let ang = v.pan as f64 * std::f64::consts::FRAC_PI_2;
+                let ang = v.pan * std::f64::consts::FRAC_PI_2;
                 l += out * ang.cos();
                 r += out * ang.sin();
                 send += out * v.send;
@@ -453,7 +526,11 @@ impl Dsp {
             // delay line (mono feedback) — NaN would circulate forever
             let di = self.delay_idx % self.delay.len();
             let delayed = self.delay[di];
-            let delayed = if delayed.is_finite() { delayed as f64 } else { 0.0 };
+            let delayed = if delayed.is_finite() {
+                delayed as f64
+            } else {
+                0.0
+            };
             let send = if send.is_finite() { send } else { 0.0 };
             let fb = delayed as f32 * 0.35 + (send * 0.6) as f32;
             self.delay[di] = if fb.is_finite() { fb } else { 0.0 };
@@ -488,23 +565,6 @@ impl Dsp {
     pub fn stats(&self) -> (usize, usize) {
         (self.voices.len(), self.pending.len())
     }
-
-    pub fn diag1(&self) -> f64 {
-        self.sched_calls as f64
-    }
-
-    pub fn diag2(&self) -> f64 {
-        self.spawned_total as f64
-    }
-
-    pub fn diag3(&self) -> f64 {
-        self.first_at
-    }
-
-    #[cfg(test)]
-    pub fn active_voices(&self) -> usize {
-        self.voices.len()
-    }
 }
 
 fn soft_clip(x: f64) -> f64 {
@@ -520,7 +580,7 @@ fn soft_clip(x: f64) -> f64 {
     } else {
         x - x * x * x / 3.0
     };
-    y.min(1.0).max(-1.0)
+    y.clamp(-1.0, 1.0)
 }
 
 /// Clamp with a fallback for NaN control values.
@@ -545,7 +605,9 @@ mod tests {
     fn reports_pending_and_voice_capacity_overloads() {
         let mut dsp = Dsp::new(48000.0);
         let ctl = [f64::NAN; NCTL];
-        for _ in 0..(MAX_PENDING + 1) { dsp.schedule(0.0, 1.0, &ctl, "sine"); }
+        for _ in 0..(MAX_PENDING + 1) {
+            dsp.schedule(0.0, 1.0, &ctl, "sine");
+        }
         assert_eq!(dsp.overloads, 1);
         dsp.process(&mut [0.0; 128], &mut [0.0; 128], 0);
         assert_eq!(dsp.overloads, 1 + (MAX_PENDING - MAX_VOICES) as u32);
@@ -568,8 +630,12 @@ mod tests {
                     let mut count = 0;
                     for frame in (0..sr as usize).step_by(128) {
                         d.process(&mut l, &mut r, frame as i64);
-                        assert!(d.voices.iter().all(|v| v.ic1.is_finite() && v.ic2.is_finite()),
-                            "filter diverged: sr={sr}, cutoff={cutoff}, resonance={resonance}");
+                        assert!(
+                            d.voices
+                                .iter()
+                                .all(|v| v.ic1.is_finite() && v.ic2.is_finite()),
+                            "filter diverged: sr={sr}, cutoff={cutoff}, resonance={resonance}"
+                        );
                         if frame as f64 >= sr * 0.5 {
                             for &sample in &l {
                                 energy += (sample as f64).powi(2);
@@ -587,9 +653,9 @@ mod tests {
 
     #[test]
     fn sample_audio_is_independent_of_overridden_instrument_name() {
-        let data: Vec<f32> = (0..8192).map(|i|
-            (0.5 * (std::f64::consts::TAU * 220.0 * i as f64 / 48000.0).sin()) as f32
-        ).collect();
+        let data: Vec<f32> = (0..8192)
+            .map(|i| (0.5 * (std::f64::consts::TAU * 220.0 * i as f64 / 48000.0).sin()) as f32)
+            .collect();
         let render = |name: &str| {
             let mut d = Dsp::new(48000.0);
             assert!(d.load_sample(name, &data, 48000.0));
@@ -603,7 +669,9 @@ mod tests {
         };
         let expected = render("sample");
         assert!(expected.0.iter().any(|v| v.abs() > 0.01));
-        for name in ["bd", "kick", "sn", "snare", "hh", "hat", "hhc", "oh", "cp", "clap", "tom", "sine"] {
+        for name in [
+            "bd", "kick", "sn", "snare", "hh", "hat", "hhc", "oh", "cp", "clap", "tom", "sine",
+        ] {
             assert!(render(name) == expected, "sample changed when named {name}");
         }
     }
@@ -622,12 +690,17 @@ mod tests {
         let mut r = vec![0.0; 256];
         d.process(&mut l, &mut r, 0);
         assert!(l[100].abs() > 0.01);
-        for q in 1..20 { d.process(&mut l, &mut r, q * 256); }
+        for q in 1..20 {
+            d.process(&mut l, &mut r, q * 256);
+        }
         assert!(l.iter().all(|v| v.abs() < 0.0001));
         d.flush();
         d.schedule(0.0, 1.0, &ctl, "sample");
         d.process(&mut l, &mut r, 0);
-        assert!(l[100].abs() > 0.01, "flush must preserve registered samples");
+        assert!(
+            l[100].abs() > 0.01,
+            "flush must preserve registered samples"
+        );
     }
 
     #[test]
@@ -647,7 +720,10 @@ mod tests {
         assert_eq!(d.pending.len(), 1, "unrelated notes must remain queued");
         assert!(!d.remove_sample("bd"));
         d.schedule(1.0, 1.0, &default_ctl(), "bd");
-        assert!(d.pending.iter().all(|p| p.sample.is_none()), "builtin instruments return after removal");
+        assert!(
+            d.pending.iter().all(|p| p.sample.is_none()),
+            "builtin instruments return after removal"
+        );
     }
 
     #[test]
@@ -694,7 +770,10 @@ mod tests {
         assert!(l.iter().all(|x| *x == 0.0), "first quantum must be silent");
         d.process(&mut l, &mut r, 512);
         let peak = l.iter().chain(r.iter()).fold(0.0f32, |a, b| a.max(b.abs()));
-        assert!(peak > 0.001, "note should start in second quantum, peak={peak}");
+        assert!(
+            peak > 0.001,
+            "note should start in second quantum, peak={peak}"
+        );
     }
 
     #[test]

@@ -15,12 +15,16 @@ pub struct Registry<T> {
 
 impl<T> Registry<T> {
     pub const fn new() -> Self {
-        Registry { slots: Mutex::new(Vec::new()) }
+        Registry {
+            slots: Mutex::new(Vec::new()),
+        }
     }
 
     /// Store `v`; returns a positive handle (`gen << 16 | index + 1`), or 0 when full.
     pub fn insert(&self, v: T) -> i32 {
-        let Ok(mut slots) = self.slots.lock() else { return 0 };
+        let Ok(mut slots) = self.slots.lock() else {
+            return 0;
+        };
         let idx = match slots.iter().position(|s| s.val.is_none()) {
             Some(i) => i,
             None if slots.len() < 0xffff => {
@@ -50,7 +54,10 @@ impl<T> Registry<T> {
             return std::ptr::null_mut();
         };
         match slots.get_mut(idx) {
-            Some(s) if s.gen == gen => s.val.as_deref_mut().map_or(std::ptr::null_mut(), |b| b as *mut T),
+            Some(s) if s.gen == gen => s
+                .val
+                .as_deref_mut()
+                .map_or(std::ptr::null_mut(), |b| b as *mut T),
             _ => std::ptr::null_mut(),
         }
     }

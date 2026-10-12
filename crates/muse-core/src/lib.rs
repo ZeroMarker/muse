@@ -11,7 +11,7 @@ mod ir;
 mod pattern;
 mod sched;
 
-pub use ir::{Pat, NCTL, DEFAULTS};
+pub use ir::{Pat, DEFAULTS, NCTL};
 
 use std::sync::Mutex;
 
@@ -93,7 +93,9 @@ pub unsafe extern "C" fn ir_decode(ptr: *const u8, len: u32) -> i32 {
     match ir::decode(bytes) {
         Ok(pat) => {
             let h = PATS.insert(pat);
-            if h == 0 { set_err("ir decode: too many patterns"); }
+            if h == 0 {
+                set_err("ir decode: too many patterns");
+            }
             h
         }
         Err(e) => {
@@ -118,7 +120,11 @@ pub unsafe extern "C" fn ir_release(h: i32) {
 
 #[no_mangle]
 pub extern "C" fn sched_new(cps: f64) -> i32 {
-    SCHEDS.insert(sched::Sched::new(if cps.is_finite() && cps > 0.0 { cps } else { 1.0 }))
+    SCHEDS.insert(sched::Sched::new(if cps.is_finite() && cps > 0.0 {
+        cps
+    } else {
+        1.0
+    }))
 }
 
 /// # Safety
@@ -135,6 +141,9 @@ pub unsafe extern "C" fn sched_set_pattern(sched_h: i32, pat_h: i32) -> i32 {
     1
 }
 
+/// # Safety
+/// Handles must come from the matching `*_new`/`ir_decode` call (stale handles
+/// are rejected); pointer arguments must reference the stated number of bytes.
 #[no_mangle]
 pub unsafe extern "C" fn sched_clear_pattern(sched_h: i32) {
     if !SCHEDS.ptr(sched_h).is_null() {
@@ -143,6 +152,10 @@ pub unsafe extern "C" fn sched_clear_pattern(sched_h: i32) {
 }
 
 /// Change tempo, rebasing the clock at `audio_now` (audio-context seconds).
+///
+/// # Safety
+/// Handles must come from the matching `*_new`/`ir_decode` call (stale handles
+/// are rejected); pointer arguments must reference the stated number of bytes.
 #[no_mangle]
 pub unsafe extern "C" fn sched_set_cps(sched_h: i32, cps: f64, audio_now: f64) {
     if !SCHEDS.ptr(sched_h).is_null() && cps.is_finite() && cps > 0.0 && audio_now.is_finite() {
@@ -151,6 +164,10 @@ pub unsafe extern "C" fn sched_set_cps(sched_h: i32, cps: f64, audio_now: f64) {
 }
 
 /// Cycle position at audio-context time `audio_now`.
+///
+/// # Safety
+/// Handles must come from the matching `*_new`/`ir_decode` call (stale handles
+/// are rejected); pointer arguments must reference the stated number of bytes.
 #[no_mangle]
 pub unsafe extern "C" fn sched_cycle_at(sched_h: i32, audio_now: f64) -> f64 {
     if SCHEDS.ptr(sched_h).is_null() {
@@ -160,6 +177,10 @@ pub unsafe extern "C" fn sched_cycle_at(sched_h: i32, audio_now: f64) -> f64 {
 }
 
 /// Audio-context time of a cycle position (inverse of [`sched_cycle_at`]).
+///
+/// # Safety
+/// Handles must come from the matching `*_new`/`ir_decode` call (stale handles
+/// are rejected); pointer arguments must reference the stated number of bytes.
 #[no_mangle]
 pub unsafe extern "C" fn sched_audio_at(sched_h: i32, cycle: f64) -> f64 {
     if SCHEDS.ptr(sched_h).is_null() {
@@ -169,6 +190,10 @@ pub unsafe extern "C" fn sched_audio_at(sched_h: i32, cycle: f64) -> f64 {
 }
 
 /// Restart the scheduling cursor at the current cycle (play / pattern swap).
+///
+/// # Safety
+/// Handles must come from the matching `*_new`/`ir_decode` call (stale handles
+/// are rejected); pointer arguments must reference the stated number of bytes.
 #[no_mangle]
 pub unsafe extern "C" fn sched_reset(sched_h: i32, audio_now: f64) {
     if !SCHEDS.ptr(sched_h).is_null() {
@@ -177,13 +202,19 @@ pub unsafe extern "C" fn sched_reset(sched_h: i32, audio_now: f64) {
 }
 
 /// Count events with onset in the un-scheduled window `[cursor, horizon)`.
+///
+/// # Safety
+/// Handles must come from the matching `*_new`/`ir_decode` call (stale handles
+/// are rejected); pointer arguments must reference the stated number of bytes.
 #[no_mangle]
 pub unsafe extern "C" fn sched_count(sched_h: i32, horizon: f64) -> i32 {
     if SCHEDS.ptr(sched_h).is_null() {
         return -1;
     }
     let count = (*(SCHEDS.ptr(sched_h))).count(horizon);
-    if count < 0 { set_err("pattern exceeds query work or event limit"); }
+    if count < 0 {
+        set_err("pattern exceeds query work or event limit");
+    }
     count
 }
 
@@ -203,9 +234,11 @@ pub unsafe extern "C" fn sched_query(sched_h: i32, horizon: f64, out: *mut u8, c
     match s.query(horizon, buf) {
         Ok(n) => n as i32,
         Err(code) => {
-            if code == -3 { set_err("pattern exceeds query work or event limit"); }
+            if code == -3 {
+                set_err("pattern exceeds query work or event limit");
+            }
             code
-        },
+        }
     }
 }
 
@@ -214,13 +247,7 @@ pub unsafe extern "C" fn sched_query(sched_h: i32, horizon: f64, out: *mut u8, c
 /// # Safety
 /// `out` must reference `cap` writable bytes.
 #[no_mangle]
-pub unsafe extern "C" fn sched_peek(
-    sched_h: i32,
-    lo: f64,
-    hi: f64,
-    out: *mut u8,
-    cap: u32,
-) -> i32 {
+pub unsafe extern "C" fn sched_peek(sched_h: i32, lo: f64, hi: f64, out: *mut u8, cap: u32) -> i32 {
     if SCHEDS.ptr(sched_h).is_null() || out.is_null() {
         return -1;
     }
@@ -229,9 +256,11 @@ pub unsafe extern "C" fn sched_peek(
     match s.pack_range(lo, hi, buf) {
         Ok(n) => n as i32,
         Err(code) => {
-            if code == -3 { set_err("pattern exceeds query work or event limit"); }
+            if code == -3 {
+                set_err("pattern exceeds query work or event limit");
+            }
             code
-        },
+        }
     }
 }
 
@@ -296,6 +325,10 @@ pub unsafe extern "C" fn dsp_process(h: i32, l: *mut f32, r: *mut f32, n: i32, b
 }
 
 /// Diagnostics: `(voices << 16) | pending`.
+///
+/// # Safety
+/// Handles must come from the matching `*_new`/`ir_decode` call (stale handles
+/// are rejected); pointer arguments must reference the stated number of bytes.
 #[no_mangle]
 pub unsafe extern "C" fn dsp_stats(h: i32) -> u32 {
     if DSPS.ptr(h).is_null() {
@@ -307,13 +340,23 @@ pub unsafe extern "C" fn dsp_stats(h: i32) -> u32 {
 }
 
 /// Total dropped notes and stolen voices for this DSP instance.
+///
+/// # Safety
+/// Handles must come from the matching `*_new`/`ir_decode` call (stale handles
+/// are rejected); pointer arguments must reference the stated number of bytes.
 #[no_mangle]
 pub unsafe extern "C" fn dsp_overloads(h: i32) -> u32 {
-    if DSPS.ptr(h).is_null() { return 0; }
+    if DSPS.ptr(h).is_null() {
+        return 0;
+    }
     (*(DSPS.ptr(h))).overloads
 }
 
 /// Diagnostics pack: sched_calls (f64 bits via separate calls instead).
+///
+/// # Safety
+/// Handles must come from the matching `*_new`/`ir_decode` call (stale handles
+/// are rejected); pointer arguments must reference the stated number of bytes.
 #[no_mangle]
 pub unsafe extern "C" fn dsp_sched_calls(h: i32) -> u32 {
     if DSPS.ptr(h).is_null() {
@@ -322,6 +365,9 @@ pub unsafe extern "C" fn dsp_sched_calls(h: i32) -> u32 {
     (*(DSPS.ptr(h))).sched_calls
 }
 
+/// # Safety
+/// Handles must come from the matching `*_new`/`ir_decode` call (stale handles
+/// are rejected); pointer arguments must reference the stated number of bytes.
 #[no_mangle]
 pub unsafe extern "C" fn dsp_spawned(h: i32) -> u32 {
     if DSPS.ptr(h).is_null() {
@@ -330,6 +376,9 @@ pub unsafe extern "C" fn dsp_spawned(h: i32) -> u32 {
     (*(DSPS.ptr(h))).spawned_total
 }
 
+/// # Safety
+/// Handles must come from the matching `*_new`/`ir_decode` call (stale handles
+/// are rejected); pointer arguments must reference the stated number of bytes.
 #[no_mangle]
 pub unsafe extern "C" fn dsp_first_at(h: i32) -> f64 {
     if DSPS.ptr(h).is_null() {
@@ -339,6 +388,10 @@ pub unsafe extern "C" fn dsp_first_at(h: i32) -> f64 {
 }
 
 /// Kill all pending events, voices and delay tails (transport stop).
+///
+/// # Safety
+/// Handles must come from the matching `*_new`/`ir_decode` call (stale handles
+/// are rejected); pointer arguments must reference the stated number of bytes.
 #[no_mangle]
 pub unsafe extern "C" fn dsp_flush(h: i32) {
     if !DSPS.ptr(h).is_null() {
@@ -347,6 +400,10 @@ pub unsafe extern "C" fn dsp_flush(h: i32) {
 }
 
 /// Cancel pending notes without stopping voices already sounding.
+///
+/// # Safety
+/// Handles must come from the matching `*_new`/`ir_decode` call (stale handles
+/// are rejected); pointer arguments must reference the stated number of bytes.
 #[no_mangle]
 pub unsafe extern "C" fn dsp_clear_pending(h: i32) {
     if !DSPS.ptr(h).is_null() {
@@ -365,11 +422,26 @@ pub unsafe extern "C" fn dsp_free(h: i32) {
 /// # Safety
 /// All pointers must refer to valid slices, and `h` must be a live DSP handle.
 #[no_mangle]
-pub unsafe extern "C" fn dsp_load_sample(h: i32, name: *const u8, name_len: i32, data: *const f32, frames: i32, rate: f64) -> i32 {
-    if DSPS.ptr(h).is_null() || name.is_null() || data.is_null() || name_len <= 0 || name_len > 127 || frames <= 0 {
+pub unsafe extern "C" fn dsp_load_sample(
+    h: i32,
+    name: *const u8,
+    name_len: i32,
+    data: *const f32,
+    frames: i32,
+    rate: f64,
+) -> i32 {
+    if DSPS.ptr(h).is_null()
+        || name.is_null()
+        || data.is_null()
+        || name_len <= 0
+        || name_len > 127
+        || frames <= 0
+    {
         return 0;
     }
-    let Ok(name) = std::str::from_utf8(std::slice::from_raw_parts(name, name_len as usize)) else { return 0; };
+    let Ok(name) = std::str::from_utf8(std::slice::from_raw_parts(name, name_len as usize)) else {
+        return 0;
+    };
     let samples = std::slice::from_raw_parts(data, frames as usize);
     (*(DSPS.ptr(h))).load_sample(name, samples, rate) as i32
 }
@@ -379,7 +451,11 @@ pub unsafe extern "C" fn dsp_load_sample(h: i32, name: *const u8, name_len: i32,
 /// `name` must refer to a valid slice, and `h` must be a live DSP handle.
 #[no_mangle]
 pub unsafe extern "C" fn dsp_remove_sample(h: i32, name: *const u8, name_len: i32) -> i32 {
-    if DSPS.ptr(h).is_null() || name.is_null() || name_len <= 0 || name_len > 127 { return 0; }
-    let Ok(name) = std::str::from_utf8(std::slice::from_raw_parts(name, name_len as usize)) else { return 0; };
+    if DSPS.ptr(h).is_null() || name.is_null() || name_len <= 0 || name_len > 127 {
+        return 0;
+    }
+    let Ok(name) = std::str::from_utf8(std::slice::from_raw_parts(name, name_len as usize)) else {
+        return 0;
+    };
     (*(DSPS.ptr(h))).remove_sample(name) as i32
 }

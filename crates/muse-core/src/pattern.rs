@@ -73,26 +73,42 @@ fn cycle_rand(c: i64) -> f64 {
     (x >> 11) as f64 / (1u64 << 53) as f64
 }
 
-struct Budget { work: usize, events: usize, exceeded: bool }
+struct Budget {
+    work: usize,
+    events: usize,
+    exceeded: bool,
+}
 
 impl Budget {
     fn spend(&mut self, amount: usize) -> bool {
         self.work = self.work.saturating_add(amount);
-        if self.work > 100_000 { self.exceeded = true; }
+        if self.work > 100_000 {
+            self.exceeded = true;
+        }
         !self.exceeded
     }
     fn event(&mut self) -> bool {
         self.events += 1;
-        if self.events > 16_384 { self.exceeded = true; }
+        if self.events > 16_384 {
+            self.exceeded = true;
+        }
         self.spend(1)
     }
 }
 
 /// Bound intermediate work as well as the final event vector.
 pub fn query_bounded(pat: &Pat, span: Span) -> Result<Vec<Hap>, ()> {
-    let mut budget = Budget { work: 0, events: 0, exceeded: false };
+    let mut budget = Budget {
+        work: 0,
+        events: 0,
+        exceeded: false,
+    };
     let result = query_inner(pat, span, &mut budget);
-    if budget.exceeded { Err(()) } else { Ok(result) }
+    if budget.exceeded {
+        Err(())
+    } else {
+        Ok(result)
+    }
 }
 
 #[cfg(test)]
@@ -101,10 +117,15 @@ pub fn query(pat: &Pat, span: Span) -> Vec<Hap> {
 }
 
 fn query_inner(pat: &Pat, span: Span, budget: &mut Budget) -> Vec<Hap> {
-    if !budget.spend(1) { return Vec::new(); }
-    if !span.start.is_finite() || !span.end.is_finite()
-        || span.start.abs() > 1e12 || span.end.abs() > 1e12
-        || span.end.ceil() - span.start.floor() > MAX_CYCLES as f64 {
+    if !budget.spend(1) {
+        return Vec::new();
+    }
+    if !span.start.is_finite()
+        || !span.end.is_finite()
+        || span.start.abs() > 1e12
+        || span.end.abs() > 1e12
+        || span.end.ceil() - span.start.floor() > MAX_CYCLES as f64
+    {
         budget.exceeded = true;
         return Vec::new();
     }
@@ -114,14 +135,21 @@ fn query_inner(pat: &Pat, span: Span, budget: &mut Budget) -> Vec<Hap> {
     let result = match pat {
         Pat::WithNote(pitches, kid) => {
             let events = query_inner(kid, span, budget);
-            let lo = events.iter().fold(span.start, |lo, h| lo.min(h.whole.start));
+            let lo = events
+                .iter()
+                .fold(span.start, |lo, h| lo.min(h.whole.start));
             let notes = query_inner(pitches, Span::new(lo, span.end), budget);
             let mut out = Vec::new();
             for event in events {
                 for pitch in &notes {
-                    if !budget.spend(1) { return Vec::new(); }
-                    if pitch.whole.start <= event.whole.start && event.whole.start < pitch.whole.end {
-                        if !budget.event() { return Vec::new(); }
+                    if !budget.spend(1) {
+                        return Vec::new();
+                    }
+                    if pitch.whole.start <= event.whole.start && event.whole.start < pitch.whole.end
+                    {
+                        if !budget.event() {
+                            return Vec::new();
+                        }
                         let mut h = event.clone();
                         h.ctl[crate::ir::CTL_NOTE] = pitch.ctl[crate::ir::CTL_NOTE];
                         out.push(h);
@@ -135,12 +163,21 @@ fn query_inner(pat: &Pat, span: Span, budget: &mut Budget) -> Vec<Hap> {
         Pat::Atom { sound, ctl } => {
             let mut out = Vec::new();
             for c in span.cycles() {
-                if !budget.spend(1) { return Vec::new(); }
+                if !budget.spend(1) {
+                    return Vec::new();
+                }
                 let whole = Span::new(c as f64, c as f64 + 1.0);
                 let part = whole.intersect(span);
                 if !part.is_empty() {
-                    if !budget.event() { return Vec::new(); }
-                    out.push(Hap { whole, part, ctl: *ctl, sound: sound.clone() });
+                    if !budget.event() {
+                        return Vec::new();
+                    }
+                    out.push(Hap {
+                        whole,
+                        part,
+                        ctl: *ctl,
+                        sound: sound.clone(),
+                    });
                 }
             }
             out
@@ -153,10 +190,14 @@ fn query_inner(pat: &Pat, span: Span, budget: &mut Budget) -> Vec<Hap> {
             let n = kids.len() as f64;
             let mut out = Vec::new();
             for c in span.cycles() {
-                if !budget.spend(1) { return Vec::new(); }
+                if !budget.spend(1) {
+                    return Vec::new();
+                }
                 let base = c as f64;
                 for (i, kid) in kids.iter().enumerate() {
-                    if !budget.spend(1) { return Vec::new(); }
+                    if !budget.spend(1) {
+                        return Vec::new();
+                    }
                     let slot = Span::new(base + i as f64 / n, base + (i + 1) as f64 / n);
                     let q = slot.intersect(span);
                     if q.is_empty() {
@@ -177,7 +218,9 @@ fn query_inner(pat: &Pat, span: Span, budget: &mut Budget) -> Vec<Hap> {
         Pat::Overlay(kids) => {
             let mut out = Vec::new();
             for kid in kids {
-                if !budget.spend(1) { return Vec::new(); }
+                if !budget.spend(1) {
+                    return Vec::new();
+                }
                 out.extend(query_inner(kid, span, budget));
             }
             out
@@ -203,7 +246,9 @@ fn query_inner(pat: &Pat, span: Span, budget: &mut Budget) -> Vec<Hap> {
             let n = (*n).max(1);
             let mut out = Vec::new();
             for c in span.cycles() {
-                if !budget.spend(1) { return Vec::new(); }
+                if !budget.spend(1) {
+                    return Vec::new();
+                }
                 let cs = Span::new(c as f64, c as f64 + 1.0).intersect(span);
                 if cs.is_empty() {
                     continue;
@@ -222,7 +267,9 @@ fn query_inner(pat: &Pat, span: Span, budget: &mut Budget) -> Vec<Hap> {
         Pat::Sometimes(prob, step, kid) => {
             let mut out = Vec::new();
             for c in span.cycles() {
-                if !budget.spend(1) { return Vec::new(); }
+                if !budget.spend(1) {
+                    return Vec::new();
+                }
                 let cs = Span::new(c as f64, c as f64 + 1.0).intersect(span);
                 if cs.is_empty() {
                     continue;
@@ -241,17 +288,26 @@ fn query_inner(pat: &Pat, span: Span, budget: &mut Budget) -> Vec<Hap> {
         Pat::Rev(kid) => {
             let mut out = Vec::new();
             for c in span.cycles() {
-                if !budget.spend(1) { return Vec::new(); }
+                if !budget.spend(1) {
+                    return Vec::new();
+                }
                 let base = c as f64;
                 let local = Span::new(base, base + 1.0).intersect(span);
                 if local.is_empty() {
                     continue;
                 }
-                let mirrored = Span::new(2.0 * base + 1.0 - local.end, 2.0 * base + 1.0 - local.start);
+                let mirrored =
+                    Span::new(2.0 * base + 1.0 - local.end, 2.0 * base + 1.0 - local.start);
                 for mut h in query_inner(kid, mirrored, budget) {
-                    h.whole = Span::new(2.0 * base + 1.0 - h.whole.end, 2.0 * base + 1.0 - h.whole.start);
-                    h.part = Span::new(2.0 * base + 1.0 - h.part.end, 2.0 * base + 1.0 - h.part.start)
-                        .intersect(local);
+                    h.whole = Span::new(
+                        2.0 * base + 1.0 - h.whole.end,
+                        2.0 * base + 1.0 - h.whole.start,
+                    );
+                    h.part = Span::new(
+                        2.0 * base + 1.0 - h.part.end,
+                        2.0 * base + 1.0 - h.part.start,
+                    )
+                    .intersect(local);
                     if !h.whole.is_empty() && !h.part.is_empty() {
                         out.push(h);
                     }
@@ -267,7 +323,9 @@ fn query_inner(pat: &Pat, span: Span, budget: &mut Budget) -> Vec<Hap> {
             let n = kids.len() as i64;
             let mut out = Vec::new();
             for c in span.cycles() {
-                if !budget.spend(1) { return Vec::new(); }
+                if !budget.spend(1) {
+                    return Vec::new();
+                }
                 let cs = Span::new(c as f64, c as f64 + 1.0).intersect(span);
                 if cs.is_empty() {
                     continue;
@@ -290,10 +348,14 @@ fn query_inner(pat: &Pat, span: Span, budget: &mut Budget) -> Vec<Hap> {
             let n = mask.len() as f64;
             let mut out = Vec::new();
             for c in span.cycles() {
-                if !budget.spend(1) { return Vec::new(); }
+                if !budget.spend(1) {
+                    return Vec::new();
+                }
                 let base = c as f64;
                 for (i, hit) in mask.iter().enumerate() {
-                    if !budget.spend(1) { return Vec::new(); }
+                    if !budget.spend(1) {
+                        return Vec::new();
+                    }
                     if !hit {
                         continue;
                     }
@@ -314,36 +376,30 @@ fn query_inner(pat: &Pat, span: Span, budget: &mut Budget) -> Vec<Hap> {
             out
         }
 
-        Pat::Shift(d, kid) => {
-            query_inner(kid, Span::new(span.start - d, span.end - d), budget)
-                .into_iter()
-                .map(|mut h| {
-                    h.whole = Span::new(h.whole.start + d, h.whole.end + d);
-                    h.part = Span::new(h.part.start + d, h.part.end + d);
-                    h
-                })
-                .collect()
-        }
+        Pat::Shift(d, kid) => query_inner(kid, Span::new(span.start - d, span.end - d), budget)
+            .into_iter()
+            .map(|mut h| {
+                h.whole = Span::new(h.whole.start + d, h.whole.end + d);
+                h.part = Span::new(h.part.start + d, h.part.end + d);
+                h
+            })
+            .collect(),
 
-        Pat::SetCtl(slot, v, kid) => {
-            query_inner(kid, span, budget)
-                .into_iter()
-                .map(|mut h| {
-                    h.ctl[*slot] = *v;
-                    h
-                })
-                .collect()
-        }
+        Pat::SetCtl(slot, v, kid) => query_inner(kid, span, budget)
+            .into_iter()
+            .map(|mut h| {
+                h.ctl[*slot] = *v;
+                h
+            })
+            .collect(),
 
-        Pat::SetSound(s, kid) => {
-            query_inner(kid, span, budget)
-                .into_iter()
-                .map(|mut h| {
-                    h.sound = s.clone();
-                    h
-                })
-                .collect()
-        }
+        Pat::SetSound(s, kid) => query_inner(kid, span, budget)
+            .into_iter()
+            .map(|mut h| {
+                h.sound = s.clone();
+                h
+            })
+            .collect(),
 
         Pat::AddCtl(slot, delta, kid) => {
             let (base_default, delta) = (*slot, *delta);
@@ -366,11 +422,15 @@ fn query_inner(pat: &Pat, span: Span, budget: &mut Budget) -> Vec<Hap> {
             let nf = n as f64;
             let mut out = Vec::new();
             for c in span.cycles() {
-                if !budget.spend(1) { return Vec::new(); }
+                if !budget.spend(1) {
+                    return Vec::new();
+                }
                 let base = c as f64;
                 let idx = c.rem_euclid(n);
                 for i in 0..n {
-                    if !budget.spend(1) { return Vec::new(); }
+                    if !budget.spend(1) {
+                        return Vec::new();
+                    }
                     let slot = Span::new(base + i as f64 / nf, base + (i + 1) as f64 / nf);
                     let q = slot.intersect(span);
                     if q.is_empty() {
@@ -389,7 +449,9 @@ fn query_inner(pat: &Pat, span: Span, budget: &mut Budget) -> Vec<Hap> {
             out
         }
     };
-    if !budget.spend(result.len()) { return Vec::new(); }
+    if !budget.spend(result.len()) {
+        return Vec::new();
+    }
     result
 }
 
@@ -401,7 +463,10 @@ mod tests {
     fn atom(sound: &str) -> Pat {
         let mut ctl = [f64::NAN; NCTL];
         ctl[CTL_NOTE] = 60.0;
-        Pat::Atom { sound: sound.into(), ctl }
+        Pat::Atom {
+            sound: sound.into(),
+            ctl,
+        }
     }
 
     fn onsets(p: &Pat, lo: f64, hi: f64) -> Vec<f64> {
@@ -460,7 +525,11 @@ mod tests {
 
     #[test]
     fn every_applies_step_every_nth_cycle() {
-        let p = Pat::Every(2, Box::new(Pat::Fast(2.0, Box::new(atom("a")))), Box::new(atom("a")));
+        let p = Pat::Every(
+            2,
+            Box::new(Pat::Fast(2.0, Box::new(atom("a")))),
+            Box::new(atom("a")),
+        );
         // cycle 0: fast -> 0, .5 ; cycle 1: base -> 1 ; cycle 2: fast -> 2, 2.5
         assert_eq!(onsets(&p, 0.0, 3.0), vec![0.0, 0.5, 1.0, 2.0, 2.5]);
     }
@@ -487,18 +556,31 @@ mod tests {
         let reversed = Pat::Rev(Box::new(p.clone()));
         for cycle in [-3.0, -1.0, 1.0, 3.0] {
             let events = query(&reversed, Span::new(cycle, cycle + 1.0));
-            assert_eq!(events.iter().map(|h| h.sound.as_str()).collect::<Vec<_>>(), vec!["c", "d"]);
+            assert_eq!(
+                events.iter().map(|h| h.sound.as_str()).collect::<Vec<_>>(),
+                vec!["c", "d"]
+            );
             assert_eq!(events[0].whole.start, cycle + 0.5);
             assert_eq!(events[1].whole.start, cycle);
         }
         let twice = Pat::Rev(Box::new(reversed));
         let original = query(&p, Span::new(-2.0, 4.0));
         let restored = query(&twice, Span::new(-2.0, 4.0));
-        assert_eq!(original.iter().map(|h| (&h.sound, h.whole)).collect::<Vec<_>>(),
-                   restored.iter().map(|h| (&h.sound, h.whole)).collect::<Vec<_>>());
+        assert_eq!(
+            original
+                .iter()
+                .map(|h| (&h.sound, h.whole))
+                .collect::<Vec<_>>(),
+            restored
+                .iter()
+                .map(|h| (&h.sound, h.whole))
+                .collect::<Vec<_>>()
+        );
         let clipped = query(&twice, Span::new(1.25, 1.75));
-        assert_eq!(clipped.iter().map(|h| h.part).collect::<Vec<_>>(),
-                   vec![Span::new(1.25, 1.5), Span::new(1.5, 1.75)]);
+        assert_eq!(
+            clipped.iter().map(|h| h.part).collect::<Vec<_>>(),
+            vec![Span::new(1.25, 1.5), Span::new(1.5, 1.75)]
+        );
     }
 
     #[test]
@@ -524,7 +606,10 @@ mod tests {
     fn euclid_like_struct_on_subdivided_child() {
         // child subdivided 4x per cycle, masked x.xx. -> hits at 0, .75
         let child = Pat::Cat(vec![atom("a"); 4]);
-        let p = Pat::Struct { mask: vec![true, false, true, true], child: Box::new(child) };
+        let p = Pat::Struct {
+            mask: vec![true, false, true, true],
+            child: Box::new(child),
+        };
         assert_eq!(onsets(&p, 0.0, 1.0), vec![0.0, 0.5, 0.75]);
     }
 
@@ -535,7 +620,10 @@ mod tests {
             ctl[CTL_GAIN] = 0.2;
         }
         let wrapped = Pat::SetCtl(CTL_GAIN, 0.9, Box::new(p));
-        let h = query(&wrapped, Span::new(0.0, 1.0)).into_iter().next().unwrap();
+        let h = query(&wrapped, Span::new(0.0, 1.0))
+            .into_iter()
+            .next()
+            .unwrap();
         assert_eq!(h.ctl[CTL_GAIN], 0.9);
         assert!(h.ctl[CTL_NOTE].is_finite());
     }
@@ -555,9 +643,18 @@ mod tests {
 
     #[test]
     fn span_cycles_edges() {
-        assert_eq!(Span::new(0.0, 3.0).cycles().collect::<Vec<_>>(), vec![0, 1, 2]);
-        assert_eq!(Span::new(0.0, 3.5).cycles().collect::<Vec<_>>(), vec![0, 1, 2, 3]);
-        assert_eq!(Span::new(-1.5, 0.0).cycles().collect::<Vec<_>>(), vec![-2, -1]);
+        assert_eq!(
+            Span::new(0.0, 3.0).cycles().collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert_eq!(
+            Span::new(0.0, 3.5).cycles().collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+        assert_eq!(
+            Span::new(-1.5, 0.0).cycles().collect::<Vec<_>>(),
+            vec![-2, -1]
+        );
     }
 }
 
@@ -567,7 +664,10 @@ mod chunk_tests {
     use crate::ir::NCTL;
 
     fn atom(sound: &str) -> Pat {
-        Pat::Atom { sound: sound.into(), ctl: [f64::NAN; NCTL] }
+        Pat::Atom {
+            sound: sound.into(),
+            ctl: [f64::NAN; NCTL],
+        }
     }
 
     fn onsets(p: &Pat, lo: f64, hi: f64) -> Vec<f64> {
@@ -585,7 +685,11 @@ mod chunk_tests {
     fn chunk_applies_step_to_moving_slot() {
         // 4-slot cycle, step doubles density in the active slot
         let four = Pat::Cat(vec![atom("a"); 4]);
-        let p = Pat::Chunk(4, Box::new(Pat::Fast(2.0, Box::new(four.clone()))), Box::new(four));
+        let p = Pat::Chunk(
+            4,
+            Box::new(Pat::Fast(2.0, Box::new(four.clone()))),
+            Box::new(four),
+        );
         // cycle 0: slot 0 fast -> 0, .125, .25(?) .. plain slots at .25 .5 .75
         let o = onsets(&p, 0.0, 2.0);
         // cycle 0 has an extra onset inside slot 0 (fast(2) of the slot pattern)
