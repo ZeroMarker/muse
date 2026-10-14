@@ -69,15 +69,16 @@ impl Sched {
             return Ok(Vec::new());
         }
         let mut haps = query_bounded(pat, Span::new(lo, hi)).map_err(|_| -3)?;
-        // Dedup + drop events whose onset already passed the window start.
-        haps.retain(|h| h.whole.start >= lo && h.whole.start < hi && h.whole.len() > 1e-9);
-        haps.sort_by(|a, b| a.whole.start.total_cmp(&b.whole.start));
-        haps.dedup_by(|a, b| {
-            a.whole.start == b.whole.start
-                && a.whole.end == b.whole.end
-                && a.sound == b.sound
-                && a.ctl == b.ctl
+        // Keep only the onset fragment of each event: an event split at cycle
+        // boundaries yields several fragments sharing one `whole`, and
+        // triggering each of them would sound the note more than once.
+        haps.retain(|h| {
+            h.whole.start >= lo
+                && h.whole.start < hi
+                && h.whole.len() > 1e-9
+                && (h.part.start - h.whole.start).abs() < 1e-9
         });
+        haps.sort_by(|a, b| a.whole.start.total_cmp(&b.whole.start));
         Ok(haps)
     }
 
@@ -228,5 +229,26 @@ mod tests {
         let mut s = Sched::new(1.0);
         s.reset(0.0);
         assert_eq!(s.count(100.0), 0);
+    }
+
+    #[test]
+    fn split_events_trigger_once() {
+        // A two-cycle event inside `<...>` is clipped at each cycle boundary;
+        // only the fragment holding the onset may be scheduled.
+        let slow = Pat::Fast(0.5, Box::new(atom("bd")));
+        let mut s = Sched::new(1.0);
+        s.pat = Some(Pat::Altern(vec![slow]));
+        s.reset(0.0);
+        let mut buf = vec![0u8; 4096];
+        let n = s.query(4.0, &mut buf).unwrap();
+        let onsets: Vec<f64> = unpack(&buf[..n]).iter().map(|e| e.0).collect();
+        assert_eq!(onsets, vec![0.0, 2.0]);
+    }
+
+    #[test]
+    fn overlaid_duplicates_are_kept() {
+        let mut s = Sched::new(1.0);
+        s.pat = Some(Pat::Overlay(vec![atom("bd"), atom("sd"), atom("bd")]));
+        assert_eq!(s.count(1.0), 3);
     }
 }
